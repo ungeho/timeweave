@@ -1,0 +1,32 @@
+/* Design tokens. Light is default; [data-theme="dark"] overrides. */
+:root {
+  --bg: #ffffff;
+  --bg-elevated: #f7f8fa;
+  --bg-muted: #eef0f3;
+  --text: #1b1d22;
+  --text-muted: #6b7280;
+  --border: #e2e5ea;
+  --accent: #3b6ef6;
+  --accent-contrast: #ffffff;
+  --danger: #d64545;
+  --today: #fff4e0;
+  --shadow: 0 8px 30px rgba(0, 0, 0, 0.12);
+
+  /* calendar layout tokens (theme-independent) */
+  --band-h: 20px;
+  --gutter-w: 52px;
+}
+
+:root[data-theme='dark'] {
+  --bg: #14161a;
+  --bg-elevated: #1c1f26;
+  --bg-muted: #23262e;
+  --text: #e7e9ee;
+  --text-muted: #9aa0aa;
+  --border: #2c3038;
+  --accent: #5b86ff;
+  --accent-contrast: #ffffff;
+  --danger: #e56b6b;
+  --today: #33291a;
+  --shadow: 0 8px 30px rgba(0, 0, 0, 0.5);
+}
