@@ -1,10 +1,18 @@
 import { useEffect, useState } from 'react';
 import { CalendarPage } from './features/calendar/CalendarPage';
+import { FreeBusyPage } from './features/share/FreeBusyPage';
 import { AuthGate } from './auth/AuthGate';
 import { useAuth } from './auth/useAuth';
 
 type Theme = 'light' | 'dark';
 const THEME_KEY = 'timeweave.theme';
+
+/** Extract a share token from a /s/:token path, else null. */
+function shareTokenFromPath(): string | null {
+  const m = /^\/s\/([^/]+)\/?$/.exec(window.location.pathname);
+  const raw = m?.[1];
+  return raw === undefined ? null : decodeURIComponent(raw);
+}
 
 export function App() {
   const { user, authEnabled, signOut } = useAuth();
@@ -16,6 +24,16 @@ export function App() {
     document.documentElement.dataset.theme = theme;
     localStorage.setItem(THEME_KEY, theme);
   }, [theme]);
+
+  // Public share route: anonymous, read-only, rendered OUTSIDE AuthGate.
+  const shareToken = shareTokenFromPath();
+  if (shareToken) {
+    return (
+      <div className="app">
+        <FreeBusyPage token={shareToken} />
+      </div>
+    );
+  }
 
   return (
     <div className="app">

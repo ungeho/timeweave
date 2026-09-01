@@ -2,7 +2,9 @@ import { useMemo, useState } from 'react';
 import type { EventOccurrence, EventRow, NewEvent } from '../../types/event';
 import { useCalendarView } from '../../hooks/useCalendarView';
 import { useEvents } from '../../hooks/useEvents';
+import { isSupabaseConfigured } from '../../lib/supabase';
 import { getUserTimeZone, instantFromZonedDayMinutes } from '../../utils/timezone';
+import { ShareDialog } from '../share/ShareDialog';
 import { CalendarToolbar } from './CalendarToolbar';
 import { MonthView } from './MonthView';
 import { TimeGridView } from './TimeGridView';
@@ -20,6 +22,7 @@ export function CalendarPage() {
   const view = useCalendarView('month');
   const events = useEvents();
   const [dialog, setDialog] = useState<DialogState | null>(null);
+  const [shareOpen, setShareOpen] = useState(false);
   const timeZone = useMemo(() => getUserTimeZone(), []);
 
   const range = useMemo(() => {
@@ -83,7 +86,12 @@ export function CalendarPage() {
 
   return (
     <div className="calendar-page">
-      <CalendarToolbar view={view} timeZone={timeZone} />
+      <div className="calendar-topbar">
+        <CalendarToolbar view={view} timeZone={timeZone} />
+        {isSupabaseConfigured && (
+          <button className="btn" onClick={() => setShareOpen(true)}>共有</button>
+        )}
+      </div>
 
       {events.error && <p className="banner error">読み込みエラー: {events.error}</p>}
 
@@ -114,6 +122,8 @@ export function CalendarPage() {
           onClose={() => setDialog(null)}
         />
       )}
+
+      {shareOpen && <ShareDialog onClose={() => setShareOpen(false)} />}
     </div>
   );
 }

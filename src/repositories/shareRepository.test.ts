@@ -1,0 +1,127 @@
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+// A recording fake for requireSupabase().rpc(name, params) -> { data, error }.
+const h = vi.hoisted(() => {
+  const calls: { name: string; params: unknown }[] = [];
+  const state: { data: unknown; error: unknown } = { data: null, error: null };
+  const client = {
+    rpc: (name: string, params: unknown) => {
+      calls.push({ name, params });
+      return Promise.resolve({ data: state.data, error: state.error });
+    },
+  };
+  return { calls, state, client };
+});
+
+vi.mock('../lib/supabase', () => ({ requireSupabase: () => h.client }));
+
+import {
+  createShareLink,
+  getFreeBusy,
+  listShareLinks,
+  revokeShareLink,
+} from './shareRepository';
+
+beforeEach(() => {
+  h.calls.length = 0;
+  h.state.data = null;
+  h.state.error = null;
+});
+
+describe('createShareLink', () => {
+  it('passes params and maps the single returned row (with token)', async () => {
+    h.state.data = [{
+      id: 'l1', token: 'secret-token', label: 'v', include_private: true,
+      expires_at: null, created_at: '2026-08-30T00:00:00Z',
+    }];
+    const link = await createShareLink({ label: 'v', includePrivate: true });
+    expect(h.calls[0]).toEqual({
+      name: 'create_share_link',
+      params: { p_label: 'v', p_include_private: true, p_expires_at: null },
+    });
+    expect(link).toEqual({
+      id: 'l1', token: 'secret-token', label: 'v', includePrivate: true,
+      expiresAt: null, revokedAt: null, createdAt: '2026-08-30T00:00:00Z',
+    });
+  });
+
+  it('defaults include_private to true when omitted', async () => {
+    h.state.data = [{ id: 'l', token: 't', label: null, include_private: true, expires_at: null, created_at: 'c' }];
+    await createShareLink();
+    expect((h.calls[0]!.params as Record<string, unknown>).p_include_private).toBe(true);
+  });
+
+  it('throws on RPC error', async () => {
+    h.state.error = { message: 'authentication required' };
+    await expect(createShareLink()).rejects.toThrow(/authentication required/);
+  });
+});
+
+describe('listShareLinks', () => {
+  it('maps rows to camelCase without a token field', async () => {
+    h.state.data = [{
+      id: 'l1', label: 'a', include_private: false,
+      expires_at: '2026-12-31T00:00:00Z', revoked_at: null, created_at: 'c',
+    }];
+    const links = await listShareLinks();
+    expect(links).toEqual([{
+      id: 'l1', label: 'a', includePrivate: false,
+      expiresAt: '2026-12-31T00:00:00Z', revokedAt: null, createdAt: 'c',
+    }]);
+    expect('token' in (links[0] as object)).toBe(false);
+  });
+
+  it('returns [] when the RPC returns null', async () => {
+    h.state.data = null;
+    expect(await listShareLinks()).toEqual([]);
+  });
+});
+
+describe('revokeShareLink', () => {
+  it('sends the id and returns the boolean result', async () => {
+    h.state.data = true;
+    expect(await revokeShareLink('l1')).toBe(true);
+    expect(h.calls[0]).toEqual({ name: 'revoke_share_link', params: { p_id: 'l1' } });
+  });
+});
+
+describe('getFreeBusy', () => {
+  it('passes the two windows and parses the discriminated slots', async () => {
+    h.state.data = {
+      complete: false,
+      slots: [
+        { all_day: true, start_date: '2026-09-01', end_date: '2026-09-02' },
+        { all_day: false, start: '2026-09-01T09:00:00+00:00', end: '2026-09-01T10:00:00+00:00' },
+      ],
+    };
+    const res = await getFreeBusy(
+      't', '2026-09-01T00:00:00Z', '2026-09-08T00:00:00Z', '2026-09-01', '2026-09-08',
+    );
+    expect(h.calls[0]).toEqual({
+      name: 'get_free_busy',
+      params: {
+        p_token: 't',
+        p_from: '2026-09-01T00:00:00Z', p_to: '2026-09-08T00:00:00Z',
+        p_from_date: '2026-09-01', p_to_date: '2026-09-08',
+      },
+    });
+    expect(res).toEqual({
+      complete: false,
+      slots: [
+        { allDay: true, startDate: '2026-09-01', endDate: '2026-09-02' },
+        { allDay: false, start: '2026-09-01T09:00:00+00:00', end: '2026-09-01T10:00:00+00:00' },
+      ],
+    });
+  });
+
+  it('defaults to complete=false-safe empty when data is empty', async () => {
+    h.state.data = {};
+    const res = await getFreeBusy('t', 'a', 'b', 'c', 'd');
+    expect(res).toEqual({ complete: false, slots: [] });
+  });
+
+  it('propagates the 22023 over-range error', async () => {
+    h.state.error = { message: 'requested range exceeds 92 days' };
+    await expect(getFreeBusy('t', 'a', 'b', 'c', 'd')).rejects.toThrow(/exceeds 92 days/);
+  });
+});

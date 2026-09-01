@@ -94,7 +94,15 @@ Phase 1 は `LocalStorageEventRepository`、Phase 2 で `SupabaseEventRepository
   timed 例外のスロット照合ずれ（timestamptz 往復のISO表記差）と all-day 繰り返しの帯配置
   （マスター日付参照）の2不具合を検証中に発見・修正（下記「修正履歴メモ」）。例外重複
   （23505→`DuplicateExceptionError`）は自動テスト＋DB制約で担保（通常UI操作では再現困難）。
-- Phase 5: 共有 URL、Free/Busy、shareToken、RPC による最小データ共有
+- **Phase 5a（実装済み・実DB／実ブラウザ検証済み・未デプロイ）**: 共有 URL（`/s/:token`）と
+  匿名 Free/Busy 表示。
+  `share_links` テーブル（`0004`）とマイグレーション `0005` の SECURITY DEFINER RPC 4本
+  （`create_share_link` / `list_share_links` / `revoke_share_link` / `get_free_busy`）で構成。
+  カレンダー右上「共有」ボタン（Supabaseモード時のみ表示）から `ShareDialog` で
+  作成 / 一覧 / 失効 / URLコピーができ、`include_private` と `expires_at` を作成時に指定する。
+  閲覧側 `FreeBusyPage` は `AuthGate` の外側でレンダリングされ、週送り以外の操作を持たない
+  完全な読み取り専用。詳細は下記「共有のセキュリティ境界（Phase 5a）」。
+- Phase 5b（未実装）: 繰り返し予定の Free/Busy 展開（現状は `complete=false` で警告表示）。
 - Phase 6: ドラッグ&ドロップ、レスポンシブ改善、ダークモード仕上げ
 
 ## TODO / 既知の制約
@@ -135,5 +143,65 @@ Phase 1 は `LocalStorageEventRepository`、Phase 2 で `SupabaseEventRepository
 ## セキュリティ方針（Phase 2 以降）
 
 - アクセス制御は Row Level Security で DB 側に強制する。フロント非表示に依存しない。
-- 共有相手へは `events` を直接公開せず、RPC 経由で `{start, end, status:'busy'}` の
-  最小データのみ返す。非公開の予定詳細は DB から出さない。
+- 共有相手へは `events` を直接公開せず、RPC（`get_free_busy`）経由で最小の Free/Busy
+  情報のみ返す。返すのは可用性を表す区間だけで、時間モデルごとに形が分かれる:
+  - timed  : `{ all_day: false, start, end }`（UTC ISO instant）
+  - all-day: `{ all_day: true, start_date, end_date }`（`YYYY-MM-DD`、end 排他）
+
+  タイトル・ID・カテゴリ等の予定詳細は SQL でも型でも読まず、DB から出さない。
+
+### 共有のセキュリティ境界（Phase 5a）
+
+境界は **DB 側の SECURITY DEFINER 関数**に置く。フロントの分岐は UX であり、防御ではない。
+
+- **テーブルは非公開**: `share_links` は `anon` / `authenticated` の双方から
+  `revoke all`（`0004`）。owner-only の RLS ポリシーは多層防御として残す。
+  `events` は匿名ロールに一切公開しない。
+- **到達可能な唯一の入口**: `0005` の4関数のみ。いずれも `security definer` +
+  `set search_path = ''`（全オブジェクトをスキーマ修飾）。DEFINER は RLS を迂回するため、
+  管理系3本は `owner_id = auth.uid()`、`get_free_busy` はトークンから解決した owner で
+  明示的に絞り込む。`execute` は PUBLIC から revoke し、管理系は `authenticated`、
+  `get_free_busy` のみ `anon` + `authenticated` に付与する。
+- **トークンはハッシュのみ保存**: サーバ側で 256bit 生成し、`sha256` の hex だけを
+  `token_hash` に保存する。平文は `create_share_link` が**一度だけ**返し、以後どこにも
+  残らない（`list_share_links` は返さない）。DB が漏洩しても有効な URL は復元できない。
+  UI もこの性質を明示し、再表示不可・分からなくなったら失効して作り直す運用とする。
+- **無効トークンはエラーにしない**: 失効・期限切れ・不存在はいずれも空の Free/Busy を返す
+  （存在オラクルを作らない）。一方、**不正・92日超のウィンドウは `22023` で拒否**する
+  （切り詰めた結果を完全な回答と誤認させないため）。
+- **返すのは可用性のみ**: タイトル・ID・カテゴリは SQL でも型（`FreeBusySlot`）でも読まない。
+  busy 区間は重複だけでなく**隣接（接触）も結合**するため、件数や個々の予定境界は漏れない。
+  結合はサーバ側で実施し、表示直前に `mergeFreeBusySlots` で再結合する（多層防御）。
+- **2つの時間モデルを混在させない**: timed は UTC instant 窓（`p_from`/`p_to`）、
+  all-day は**ローカル日付**窓（`p_from_date`/`p_to_date`、半開）で処理し、終日を
+  タイムゾーン変換しない。両窓は `FreeBusyPage` が同一の表示レンジから生成する。
+- **`include_private`**: `false` の共有リンクでは private の予定を busy 集合から除外する。
+  busy 抽出と後述の `complete` 判定の**両方**に同じ条件が掛かる。
+- **Referrer 抑止**: 共有 URL にトークンが含まれるため、`index.html` に
+  `<meta name="referrer" content="no-referrer">` を置き Referer 経由の漏洩を防ぐ。
+
+### `complete` フラグの意味（重要）
+
+`get_free_busy` は `{ complete: boolean, slots: [...] }` を返す。
+
+- Phase 5a の busy 算出は**単発予定のみ**を対象とする（正確）。繰り返しマスターや例外行は
+  展開しない。
+- そのため、ウィンドウに掛かりうる繰り返しマスター／例外が owner に存在する場合
+  （`include_private` を考慮した上で busy に寄与しうる場合）、`complete = false` を返す。
+  COUNT/UNTIL は解釈しないので、**安全側に倒して過剰に不完全と判定する**。
+- `complete = false` の意味は「**表示されている busy は正しいが、表示されていない時間を
+  空きと見なしてはいけない**」。`FreeBusyPage` はこの場合に警告バナーを出す。
+- 閲覧画面は次の3状態を厳密に区別する。**取得失敗を空きとして描画することは絶対にない**:
+  1. `complete = false` → 不完全である旨の警告バナー＋ busy 表示
+  2. RPC 失敗（`22023` やネットワークエラーを含む）→ グリッドを描画せず「取得失敗」表示
+  3. 正常成功 → Free/Busy 表示
+
+### デプロイ時 TODO（未対応・デプロイ先未確定のため保留）
+
+- **SPA フォールバック**: `/s/:token` は Vite dev では index.html にフォールバックするが、
+  本番ホスティングには rewrite 設定が必要（未追加）。無いと共有 URL が 404 になる。
+- **Referrer-Policy を HTTP ヘッダでも送出**: 現状は `index.html` の `meta` のみ。
+  meta は初期ナビゲーションや一部サブリソースを取りこぼしうるため、ホスティング側で
+  `Referrer-Policy: no-referrer` ヘッダも設定する。
+- `0005` は pgcrypto が `extensions` スキーマにある前提（Supabase 既定）。適用前に
+  `select extnamespace::regnamespace from pg_extension where extname='pgcrypto';` で確認する。
