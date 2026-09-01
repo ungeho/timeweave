@@ -68,6 +68,17 @@ Phase 1 は `LocalStorageEventRepository`、Phase 2 で `SupabaseEventRepository
 - `COUNT` **xor** `UNTIL`（併用不可、両方省略で無限）
 - 上記以外のキー（`BYMONTHDAY` 等）は非対応 → エラー
 
+### MONTHLY の月末（RFC 5545 の skip semantics）
+
+`MONTHLY` は基準日（DTSTART）の day-of-month を各月に当てはめる。**その日が存在しない
+月は occurrence を生成せず、その月ごとスキップする**（RFC 5545 準拠）。
+
+- 例: DTSTART = 1/31 → 2月・4月・6月・9月・11月は生成しない
+- 例: DTSTART = 2/29 → 閏年の2月にのみ生成する
+- **スキップされた月は `COUNT` を消費しない**（`COUNT=3` は必ず実在の3回を返す）
+- JS の `Date` は存在しない日付を翌月へ繰り上げる（1/31 + 1ヶ月 → 3/3）。この
+  rollover による誤生成を `services/recurrence.ts` で明示的に検出・排除している
+
 ## 開発フェーズ
 
 - **Phase 1（完了）**: 月カレンダー、前/次/今日、予定 CRUD、localStorage 永続化、テスト

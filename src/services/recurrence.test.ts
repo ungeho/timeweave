@@ -187,3 +187,117 @@ describe('expandRule — all-day date UNTIL', () => {
     expect(occ).toHaveLength(5); // Aug 1..5 inclusive
   });
 });
+
+describe('expandRule — MONTHLY month-end (RFC 5545 skip)', () => {
+  const localIso = (y: number, m: number, d: number, h = 9) =>
+    new Date(y, m - 1, d, h, 0, 0, 0).toISOString();
+
+  /** Local "YYYY-MM-DD" of each occurrence, for exact date assertions. */
+  const dayKeys = (occ: string[]): string[] =>
+    occ.map((iso) => {
+      const d = new Date(iso);
+      const p2 = (n: number) => String(n).padStart(2, '0');
+      return `${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())}`;
+    });
+
+  it('skips months without the 31st instead of rolling into the next month', () => {
+    // The old behaviour rolled Jan 31 + 1 month to Mar 3. RFC 5545 skips Feb.
+    const start = localIso(2026, 1, 31);
+    const occ = expandRule(
+      'FREQ=MONTHLY',
+      start,
+      new Date(2026, 0, 1).toISOString(),
+      new Date(2027, 0, 1).toISOString(),
+    );
+    expect(dayKeys(occ)).toEqual([
+      '2026-01-31',
+      '2026-03-31',
+      '2026-05-31',
+      '2026-07-31',
+      '2026-08-31',
+      '2026-10-31',
+      '2026-12-31',
+    ]);
+    // Never lands on a rolled-over day (Mar 3, May 1, ...).
+    for (const iso of occ) expect(new Date(iso).getDate()).toBe(31);
+  });
+
+  it('skips only February for a day-30 series', () => {
+    const start = localIso(2026, 1, 30);
+    const occ = expandRule(
+      'FREQ=MONTHLY',
+      start,
+      new Date(2026, 0, 1).toISOString(),
+      new Date(2027, 0, 1).toISOString(),
+    );
+    expect(occ).toHaveLength(11); // 12 months minus February
+    for (const iso of occ) expect(new Date(iso).getDate()).toBe(30);
+  });
+
+  it('handles Feb 29: present only in leap Februaries', () => {
+    const start = localIso(2024, 2, 29); // 2024 is a leap year
+    const occ = expandRule(
+      'FREQ=MONTHLY',
+      start,
+      new Date(2024, 0, 1).toISOString(),
+      new Date(2029, 0, 1).toISOString(),
+    );
+    expect(occ).toHaveLength(56); // every month on the 29th, minus Feb 2025/26/27
+    const februaries = dayKeys(occ).filter((k) => k.slice(5, 7) === '02');
+    expect(februaries).toEqual(['2024-02-29', '2028-02-29']);
+  });
+
+  it('applies the skip with INTERVAL > 1', () => {
+    // Every 2nd month from Jan 31: Jan, Mar, May, Jul all have 31; Sep/Nov do not.
+    const start = localIso(2026, 1, 31);
+    const occ = expandRule(
+      'FREQ=MONTHLY;INTERVAL=2',
+      start,
+      new Date(2026, 0, 1).toISOString(),
+      new Date(2027, 0, 1).toISOString(),
+    );
+    expect(dayKeys(occ)).toEqual([
+      '2026-01-31',
+      '2026-03-31',
+      '2026-05-31',
+      '2026-07-31',
+    ]);
+  });
+
+  it('does not count skipped months toward COUNT', () => {
+    // COUNT=3 must yield 3 REAL occurrences (Jan/Mar/May), not stop at May
+    // having "spent" two counts on the skipped Feb and Apr.
+    const start = localIso(2026, 1, 31);
+    const occ = expandRule(
+      'FREQ=MONTHLY;COUNT=3',
+      start,
+      new Date(2026, 0, 1).toISOString(),
+      new Date(2027, 0, 1).toISOString(),
+    );
+    expect(dayKeys(occ)).toEqual(['2026-01-31', '2026-03-31', '2026-05-31']);
+  });
+
+  it('stops at UNTIL inclusively across a skipped month', () => {
+    const until = new Date(2026, 2, 31, 23, 0, 0).toISOString(); // Mar 31 local
+    const start = localIso(2026, 1, 31);
+    const occ = expandRule(
+      `FREQ=MONTHLY;UNTIL=${toBasic(until)}`,
+      start,
+      new Date(2026, 0, 1).toISOString(),
+      new Date(2027, 0, 1).toISOString(),
+    );
+    expect(dayKeys(occ)).toEqual(['2026-01-31', '2026-03-31']);
+  });
+
+  it('still emits a later valid month when the range starts inside a skipped one', () => {
+    // Range covers only Feb (skipped) and Mar; the Feb skip must not end the loop.
+    const start = localIso(2026, 1, 31);
+    const occ = expandRule(
+      'FREQ=MONTHLY',
+      start,
+      new Date(2026, 1, 1).toISOString(),
+      new Date(2026, 3, 1).toISOString(),
+    );
+    expect(dayKeys(occ)).toEqual(['2026-03-31']);
+  });
+});

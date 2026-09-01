@@ -225,12 +225,32 @@ export function expandRule(
       if (probe.getTime() >= rangeEnd && rule.count === undefined && !hasUntil) break;
     } else {
       // MONTHLY: same day-of-month as dtstart, stepping `interval` months.
+      //
+      // RFC 5545: a month that has no such day-of-month (e.g. Feb 31, or Feb 29
+      // in a common year) is SKIPPED — it yields no occurrence and does not
+      // count toward COUNT. The JS Date constructor instead rolls the date over
+      // into the next month (Jan 31 + 1 month -> Mar 3), so detect that by
+      // checking whether the day-of-month survived construction.
+      const monthIndex = dtstart.getMonth() + i * rule.interval;
       const d = new Date(
         dtstart.getFullYear(),
-        dtstart.getMonth() + i * rule.interval,
+        monthIndex,
         dtstart.getDate(),
         hour, minute, second, ms,
       );
+
+      if (d.getDate() !== dtstart.getDate()) {
+        // Skipped month. `d` rolled forward, so it is strictly LATER than the
+        // (nonexistent) intended date; if even that is past UNTIL, every later
+        // month is too and the series is over.
+        if (pastUntil(d)) break;
+        // Probe the month itself, not the rolled-over date, so a skipped month
+        // can never end the loop before a later valid month is reached.
+        const monthStart = new Date(dtstart.getFullYear(), monthIndex, 1).getTime();
+        if (monthStart >= rangeEnd && rule.count === undefined && !hasUntil) break;
+        continue;
+      }
+
       if (d.getTime() >= rangeEnd && rule.count === undefined && !hasUntil) break;
       keepGoing = push(d);
     }
