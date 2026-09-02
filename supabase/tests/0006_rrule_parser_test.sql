@@ -513,9 +513,13 @@ begin
     '4.0.4 empty test owner must yield complete=true with no slots, got ' || v_res::text;
 
   -- ---------------------------------------------------------------------
-  -- 4.1 An in-subset, expandable recurrence STILL yields complete=false,
-  --     because 5b-0 does not expand anything yet. THE regression guard
-  --     against relaxing complete ahead of the expansion.
+  -- 4.1 An in-subset all-day recurrence is EXPANDED (Phase 5b-1).
+  --
+  --     Until 5b-1 this asserted the opposite -- that a supported rule still
+  --     reported complete=false, because 5b-0 shipped the parser without the
+  --     expansion and must never relax completeness ahead of it. 0007 adds the
+  --     expansion, so the guard flips: the subset is now genuinely handled.
+  --     Rules OUTSIDE the subset are still fail-closed, asserted at 4.2c/4.2d.
   -- ---------------------------------------------------------------------
   assert public.rrule_sql_subset('FREQ=DAILY', true), '4.1 precondition: rule IS in the subset';
 
@@ -523,9 +527,14 @@ begin
   values (v_ev, v_owner, '', 'busy_only', true, date '2026-08-01', date '2026-08-02', 'FREQ=DAILY');
 
   v_res := public.get_free_busy(v_tok_ok, v_from, v_to, v_fromd, v_tod);
-  assert (v_res->>'complete')::boolean = false,
-    '4.1 sql_subset=true recurrence must STILL report complete=false in 5b-0';
-  assert v_res->'slots' = '[]'::jsonb, '4.1 recurrences contribute no slots in 5b-0';
+  assert (v_res->>'complete')::boolean = true,
+    '4.1 an in-subset all-day recurrence is expanded and complete (5b-1)';
+  assert jsonb_array_length(v_res->'slots') = 1,
+    '4.1 daily occurrences merge into a single span';
+  assert v_res->'slots'->0 = jsonb_build_object(
+           'all_day', true, 'start_date', to_jsonb(date '2026-09-01'),
+           'end_date', to_jsonb(date '2026-09-08')),
+    '4.1 the span covers the whole window';
 
   delete from public.events where id = v_ev;
 
@@ -543,11 +552,19 @@ begin
     '4.2 finished series must narrow complete to true (boundary equality)';
   assert v_res->'slots' = '[]'::jsonb, '4.2 still no slots';
 
-  -- One day later and it is no longer provably finished.
+  -- One day later and it is no longer provably finished. In 5b-0 that alone
+  -- forced complete=false; since 5b-1 the same rule is inside the all-day
+  -- subset, so it is expanded instead and the single surviving occurrence
+  -- (2026-09-01, capped by UNTIL) shows up as busy.
   update public.events set rrule = 'FREQ=DAILY;UNTIL=20260901' where id = v_ev;
   v_res := public.get_free_busy(v_tok_ok, v_from, v_to, v_fromd, v_tod);
-  assert (v_res->>'complete')::boolean = false,
-    '4.2b a series reaching into the window keeps complete=false';
+  assert (v_res->>'complete')::boolean = true,
+    '4.2b a series reaching into the window is now expanded (5b-1)';
+  assert jsonb_array_length(v_res->'slots') = 1, '4.2b one occurrence survives UNTIL';
+  assert v_res->'slots'->0 = jsonb_build_object(
+           'all_day', true, 'start_date', to_jsonb(date '2026-09-01'),
+           'end_date', to_jsonb(date '2026-09-02')),
+    '4.2b the occurrence on the UNTIL date itself';
 
   -- COUNT cannot prove an end, even for a series that obviously stopped.
   update public.events set rrule = 'FREQ=DAILY;COUNT=3' where id = v_ev;
@@ -570,8 +587,13 @@ begin
   delete from public.events where id = v_ev;
 
   -- ---------------------------------------------------------------------
-  -- 4.3 Exception rows keep 0005 behaviour in 5b-0: they still force
-  --     incomplete, even when their master is provably finished.
+  -- 4.3 Exception rows are resolved exactly (Phase 5b-1), so their mere
+  --     existence no longer forces incomplete.
+  --
+  --     Until 5b-1 both asserts below expected complete=false, because 0005/0006
+  --     could not reason about exceptions at all. 0007 detaches the replaced
+  --     slot and emits the snapshot, so the answer is exact -- and the snapshot
+  --     appears in the busy set.
   -- ---------------------------------------------------------------------
   insert into public.events (id, owner_id, title, visibility, all_day, start_date, end_date, rrule)
   values (v_ev, v_owner, '', 'busy_only', true, date '2026-01-01', date '2026-01-02',
@@ -586,15 +608,22 @@ begin
           v_ev, date '2026-09-03', false);
 
   v_res := public.get_free_busy(v_tok_ok, v_from, v_to, v_fromd, v_tod);
-  assert (v_res->>'complete')::boolean = false,
-    '4.3 a non-cancelled exception in the window still forces complete=false';
-  assert v_res->'slots' = '[]'::jsonb, '4.3 exceptions contribute no slots in 5b-0';
+  assert (v_res->>'complete')::boolean = true,
+    '4.3 a non-cancelled exception is now resolved exactly (5b-1)';
+  assert jsonb_array_length(v_res->'slots') = 1, '4.3 the exception snapshot is disclosed';
+  assert v_res->'slots'->0 = jsonb_build_object(
+           'all_day', true, 'start_date', to_jsonb(date '2026-09-03'),
+           'end_date', to_jsonb(date '2026-09-04')),
+    '4.3 the snapshot lands on its own date';
 
-  -- Cancellations are NOT narrowed away in 5b-0 (narrowing #2 deferred to 5b-1).
+  -- A cancellation detaches its slot and adds nothing. The parent series ended
+  -- before the window, so there was no occurrence to remove and the result is
+  -- empty -- but still complete.
   update public.events set is_cancelled = true where id = v_ex;
   v_res := public.get_free_busy(v_tok_ok, v_from, v_to, v_fromd, v_tod);
-  assert (v_res->>'complete')::boolean = false,
-    '4.3b cancellations keep 0005 behaviour in 5b-0';
+  assert (v_res->>'complete')::boolean = true,
+    '4.3b cancellations are resolved exactly too (5b-1)';
+  assert v_res->'slots' = '[]'::jsonb, '4.3b a cancellation adds no busy';
 
   delete from public.events where id = v_ex;
   delete from public.events where id = v_ev;
@@ -602,9 +631,16 @@ begin
   -- ---------------------------------------------------------------------
   -- 4.4 include_private regression: the visibility filter must apply to the
   --     completeness predicate, not only to the busy set.
+  --
+  --     The fixture uses an UNSUPPORTED rule on purpose. Before 5b-1 any
+  --     recurrence forced incomplete, so FREQ=DAILY made the point; now that
+  --     0007 expands the all-day subset, only a rule OUTSIDE it still exercises
+  --     "visible-but-unaccountable", which is what these two asserts are about.
+  --     The supported-rule behaviour under both link kinds is covered by the
+  --     0007 suite (visibility matrix and N2).
   -- ---------------------------------------------------------------------
   insert into public.events (id, owner_id, title, visibility, all_day, start_date, end_date, rrule)
-  values (v_ev, v_owner, '', 'private', true, date '2026-08-01', date '2026-08-02', 'FREQ=DAILY');
+  values (v_ev, v_owner, '', 'private', true, date '2026-08-01', date '2026-08-02', 'FREQ=MONTHLY');
 
   v_res := public.get_free_busy(v_tok_ok, v_from, v_to, v_fromd, v_tod);
   assert (v_res->>'complete')::boolean = false,

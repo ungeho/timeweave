@@ -113,7 +113,13 @@ Phase 1 は `LocalStorageEventRepository`、Phase 2 で `SupabaseEventRepository
   作成 / 一覧 / 失効 / URLコピーができ、`include_private` と `expires_at` を作成時に指定する。
   閲覧側 `FreeBusyPage` は `AuthGate` の外側でレンダリングされ、週送り以外の操作を持たない
   完全な読み取り専用。詳細は下記「共有のセキュリティ境界（Phase 5a）」。
-- Phase 5b（未実装）: 繰り返し予定の Free/Busy 展開（現状は `complete=false` で警告表示）。
+- **Phase 5b-0（実装済み・実DB検証済み）**: SQL 側 RRULE パーサ（`0006`）。展開はまだ行わず、
+  「UNTIL から終了済みと証明できる series」を completeness 判定から除外する narrowing のみ。
+- **Phase 5b-1（実装済み・DB未適用）**: all-day の `FREQ=DAILY` / `FREQ=WEEKLY` を
+  Free/Busy へ展開（`0007`）。例外行とキャンセルも解決する。詳細は下記
+  「繰り返しの Free/Busy 展開（Phase 5b-1）」。
+- Phase 5b-2 以降（未着手）: `events.timezone` の追加と timed 繰り返しの展開、`COUNT`、
+  `FREQ=MONTHLY`。いずれも現状は `complete=false` に倒している。
 - Phase 6: ドラッグ&ドロップ、レスポンシブ改善、ダークモード仕上げ
 
 ## TODO / 既知の制約
@@ -191,15 +197,54 @@ Phase 1 は `LocalStorageEventRepository`、Phase 2 で `SupabaseEventRepository
 - **Referrer 抑止**: 共有 URL にトークンが含まれるため、`index.html` に
   `<meta name="referrer" content="no-referrer">` を置き Referer 経由の漏洩を防ぐ。
 
+### 繰り返しの Free/Busy 展開（Phase 5b-1）
+
+匿名 Free/Busy で展開するのは **all-day の `FREQ=DAILY` / `FREQ=WEEKLY`** のみ
+（`INTERVAL`、`BYDAY`(WEEKLY限定)、DATE 形式 `UNTIL` に対応）。
+`COUNT` / `FREQ=MONTHLY` / timed 繰り返しは未対応で、`complete=false` に倒す。
+
+- **展開の意味論は `services/recurrence.ts` と一致させる**: WEEKLY の週アンカーは DTSTART の
+  週の月曜（RFC 5545 の既定 `WKST=MO`）、active week は DTSTART の週を第0週として
+  `INTERVAL` 週ごと、`BYDAY` 省略時は DTSTART の曜日、`UNTIL` は occurrence の**開始日に対して
+  inclusive**、第0週で DTSTART より前の曜日は生成しない。
+- **occurrence は `[start_date, end_date)` の半開区間**で、master の duration を各回へそのまま
+  適用する。展開候補はウィンドウから閉形式で逆算するため、DTSTART が何年前でも走査量は
+  ウィンドウ幅に比例する。
+- **detach と visibility を分離する**。例外行は visibility に関係なく
+  `recurrence_slot_date` で元 occurrence を detach する（series 構造の事実）。
+  visibility を評価するのは**その例外の snapshot を busy に加えるかを決める段階だけ**。
+  この結果、`include_private=false` で private な移動例外があると元 slot も移動先も空きになるが、
+  これは private 予定を隠すという owner の意図どおりで、単発 private 予定の扱いと同じ。
+- **展開量の安全上限（5000）**。ウィンドウ依存の runtime 判定であり、文法判定
+  （`rrule_sql_subset`）とは責務を分ける。上限を超えた場合も**切り捨てず**、その master を
+  展開せずに `complete=false` を返す。
+
+#### occurrence のレンジ判定は「重なり」（TS / SQL 共通）
+
+繰り返しの occurrence は**点ではなく区間**なので、表示レンジに含まれるかは半開区間の
+**重なり**で判定する: `occurrenceStart < rangeEnd && occurrenceEnd > rangeStart`。
+開始がレンジ内かどうかでは、レンジ開始前から跨る複数日の予定を落としてしまう。
+
+この判定は `services/occurrences.ts` の `expandEvents`（duration を持つ層）にあり、
+単発予定・例外行と**同じ `overlapsRange` を共有**する。`expandRule` は「与えられた窓に
+入る開始日時」だけを答える責務のままで、RRULE の意味論（COUNT / UNTIL / 打ち切り）には
+触れていない。SQL 側（`0007`）も同じ重なり条件（`d + duration > from_date`）で実装しており、
+**両実装の意味論は一致している**。境界は `occurrences.test.ts` で固定:
+レンジ開始前から跨る=含む、`end == rangeStart`=含まない、`start == rangeEnd`=含まない、
+完全内包=含む、レンジ全体を覆う=含む。
+
 ### `complete` フラグの意味（重要）
 
 `get_free_busy` は `{ complete: boolean, slots: [...] }` を返す。
 
-- Phase 5a の busy 算出は**単発予定のみ**を対象とする（正確）。繰り返しマスターや例外行は
-  展開しない。
-- そのため、ウィンドウに掛かりうる繰り返しマスター／例外が owner に存在する場合
-  （`include_private` を考慮した上で busy に寄与しうる場合）、`complete = false` を返す。
-  COUNT/UNTIL は解釈しないので、**安全側に倒して過剰に不完全と判定する**。
+- busy 算出の対象は、単発予定に加えて **all-day の DAILY / WEEKLY 繰り返しとその例外行**
+  （Phase 5b-1）。timed 繰り返し・`COUNT`・`FREQ=MONTHLY` はまだ展開しない。
+- ウィンドウに寄与しうる行のうち**1つでも正確に扱えないものがあれば** `complete = false`。
+  判断できない入力（未対応の文法、解釈不能な RRULE、展開量が上限超過、例外行の `all_day` が
+  親と食い違う等）はすべて**安全側＝不完全**に倒す。
+- `complete = true` が保証するのは「**開示対象の busy をすべて表示した**」であって
+  「owner が暇である」ではない。`include_private=false` で除外された private 予定が
+  空きに見えるのは owner の意図した挙動であり、この保証には反しない。
 - `complete = false` の意味は「**表示されている busy は正しいが、表示されていない時間を
   空きと見なしてはいけない**」。`FreeBusyPage` はこの場合に警告バナーを出す。
 - 閲覧画面は次の3状態を厳密に区別する。**取得失敗を空きとして描画することは絶対にない**:
