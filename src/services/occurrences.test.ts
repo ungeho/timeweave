@@ -203,6 +203,117 @@ describe('expandEvents — recurring', () => {
   });
 });
 
+/**
+ * A recurring occurrence is a SPAN, so range membership is a half-open OVERLAP
+ * test -- occurrenceStart < rangeEnd && occurrenceEnd > rangeStart -- not
+ * "does the start fall inside the range".
+ *
+ * Before this was fixed, expandEvents asked the expander only for starts inside
+ * the range, so a multi-day recurring event that began before the range and ran
+ * into it disappeared. On a shared Free/Busy page that reads as free time where
+ * the owner is busy, which is why the boundaries below are pinned explicitly.
+ */
+describe('expandEvents — recurring occurrence range overlap', () => {
+  // A 3-day timed series repeating every 7 days from 2026-08-30 10:00 local.
+  const multiDay = (over: Partial<EventRow> = {}): EventRow =>
+    base({
+      id: 'm',
+      startAt: new Date(2026, 7, 30, 10).toISOString(),
+      endAt: new Date(2026, 8, 2, 10).toISOString(), // +3 days
+      rrule: 'FREQ=DAILY;INTERVAL=7',
+      ...over,
+    });
+
+  it('includes an occurrence that starts before the range and runs into it', () => {
+    const occ = expandEvents(
+      [multiDay()],
+      new Date(2026, 8, 1).toISOString(), // range starts mid-occurrence
+      new Date(2026, 8, 4).toISOString(),
+    );
+    expect(occ).toHaveLength(1);
+    expect(occ[0]!.start).toBe(new Date(2026, 7, 30, 10).toISOString());
+    // The occurrence keeps its true span; clipping is the caller's job.
+    expect(occ[0]!.end).toBe(new Date(2026, 8, 2, 10).toISOString());
+  });
+
+  it('excludes an occurrence whose end lands exactly on the range start', () => {
+    // Occurrence [08-30 10:00, 09-02 10:00); range begins exactly at its end.
+    const occ = expandEvents(
+      [multiDay()],
+      new Date(2026, 8, 2, 10).toISOString(),
+      new Date(2026, 8, 4).toISOString(),
+    );
+    expect(occ).toHaveLength(0);
+  });
+
+  it('excludes an occurrence whose start lands exactly on the range end', () => {
+    const occ = expandEvents(
+      [multiDay()],
+      new Date(2026, 7, 20).toISOString(),
+      new Date(2026, 7, 30, 10).toISOString(), // exclusive end == occurrence start
+    );
+    expect(occ).toHaveLength(0);
+  });
+
+  it('includes an occurrence lying entirely inside the range', () => {
+    const occ = expandEvents(
+      [multiDay()],
+      new Date(2026, 7, 29).toISOString(),
+      new Date(2026, 8, 3).toISOString(),
+    );
+    expect(occ).toHaveLength(1);
+    expect(occ[0]!.start).toBe(new Date(2026, 7, 30, 10).toISOString());
+  });
+
+  it('includes an occurrence that covers the whole range', () => {
+    const occ = expandEvents(
+      [multiDay()],
+      new Date(2026, 7, 31).toISOString(),
+      new Date(2026, 8, 1).toISOString(), // strictly inside the 3-day occurrence
+    );
+    expect(occ).toHaveLength(1);
+    expect(occ[0]!.start).toBe(new Date(2026, 7, 30, 10).toISOString());
+  });
+
+  it('still detaches a pre-range occurrence when an exception replaces its slot', () => {
+    const master = multiDay();
+    const exception = base({
+      id: 'x',
+      recurrenceId: 'm',
+      recurrenceSlotStart: new Date(2026, 7, 30, 10).toISOString(),
+      startAt: new Date(2026, 9, 1, 10).toISOString(), // moved far outside
+      endAt: new Date(2026, 9, 1, 11).toISOString(),
+    });
+    const occ = expandEvents(
+      [master, exception],
+      new Date(2026, 8, 1).toISOString(),
+      new Date(2026, 8, 4).toISOString(),
+    );
+    // The pre-range occurrence is generated, then removed by the exception; the
+    // exception's own snapshot is outside the range, so nothing remains.
+    expect(occ).toHaveLength(0);
+  });
+
+  it('applies the same overlap rule to all-day multi-day recurrences', () => {
+    const allDayMaster = base({
+      id: 'a',
+      allDay: true,
+      startAt: null,
+      endAt: null,
+      startDate: '2026-08-30',
+      endDate: '2026-09-02', // 3 days
+      rrule: 'FREQ=DAILY;INTERVAL=7',
+    });
+    const occ = expandEvents(
+      [allDayMaster],
+      new Date(2026, 8, 1).toISOString(),
+      new Date(2026, 8, 4).toISOString(),
+    );
+    expect(occ).toHaveLength(1);
+    expect(occ[0]!.occurrenceKey).toBe('2026-08-30');
+  });
+});
+
 describe('normalizedSlotKey', () => {
   it('treats different ISO forms of one instant as equal (timed)', () => {
     const z = '2026-09-14T00:00:00.000Z';

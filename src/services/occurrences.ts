@@ -110,15 +110,32 @@ export function expandEvents(
       if (norm) detached.add(norm);
     }
 
-    const starts = expandRule(ev.rrule, span.start, rangeStartIso, rangeEndIso);
+    // An occurrence is a SPAN, not a point: one that starts before the range can
+    // still reach into it, which matters for multi-day events. `expandRule`
+    // deliberately knows nothing about duration -- it answers "which starts fall
+    // in this window" -- so the span logic belongs here, where durationMs lives.
+    //
+    // Ask the expander for a window widened left by the duration (the earliest
+    // start that could still overlap), then apply the SAME half-open overlap test
+    // one-off rows and exceptions already get. Widening only changes which starts
+    // are collected: expansion always iterates from DTSTART, so COUNT, UNTIL and
+    // the loop's break conditions are unaffected.
+    const starts = expandRule(
+      ev.rrule,
+      span.start,
+      toIso(new Date(rangeStart - durationMs)),
+      rangeEndIso,
+    );
     for (const startIso of starts) {
+      const endIso = toIso(new Date(fromIso(startIso).getTime() + durationMs));
+      if (!overlapsRange(startIso, endIso)) continue;
       const key = occurrenceSlotKey(startIso, ev.allDay);
       const norm = normalizedSlotKey(key, ev.allDay);
       if (norm !== null && detached.has(norm)) continue; // deleted or replaced slot
       out.push({
         event: ev,
         start: startIso,
-        end: toIso(new Date(fromIso(startIso).getTime() + durationMs)),
+        end: endIso,
         allDay: ev.allDay,
         occurrenceKey: key,
         isException: false,
