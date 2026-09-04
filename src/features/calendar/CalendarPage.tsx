@@ -1,7 +1,8 @@
 import { useMemo, useState } from 'react';
-import type { EventOccurrence, EventRow, NewEvent } from '../../types/event';
+import type { EventOccurrence } from '../../types/event';
 import { useCalendarView } from '../../hooks/useCalendarView';
 import { useEvents } from '../../hooks/useEvents';
+import { rowPatchFromEdit } from '../../services/exceptionEdit';
 import { isSupabaseConfigured } from '../../lib/supabase';
 import { getUserTimeZone, instantFromZonedDayMinutes } from '../../utils/timezone';
 import { ShareDialog } from '../share/ShareDialog';
@@ -74,9 +75,15 @@ export function CalendarPage() {
   // The dialog closes itself on success; these persist and rethrow on failure so
   // the dialog can surface SeriesEditBlockedError / DuplicateExceptionError inline.
   const handleSave = async (result: SaveResult) => {
-    if (result.kind === 'create') await events.create(result.input);
-    else if (result.kind === 'updateOne') await events.update(result.id, newEventToPatch(result.input));
-    else await events.editOccurrence(result.occ, result.input, result.scope);
+    if (result.kind === 'create') {
+      await events.create(result.input);
+    } else if (result.kind === 'updateOne') {
+      // rowPatchFromEdit is the single place an edit decides anything about
+      // `timezone`; editOccurrence routes through it too for scope 'all'.
+      await events.update(result.row.id, rowPatchFromEdit(result.row, result.input, result.intent));
+    } else {
+      await events.editOccurrence(result.occ, result.input, result.scope, result.intent);
+    }
   };
 
   const handleDelete = async (result: DeleteResult) => {
@@ -119,6 +126,7 @@ export function CalendarPage() {
           timeZone={timeZone}
           onSave={handleSave}
           onDelete={handleDelete}
+          onSetSeriesTimezone={events.setSeriesTimezone}
           onClose={() => setDialog(null)}
         />
       )}
@@ -126,36 +134,4 @@ export function CalendarPage() {
       {shareOpen && <ShareDialog onClose={() => setShareOpen(false)} />}
     </div>
   );
-}
-
-/**
- * Convert create-input into an EventRow patch for edits, explicitly nulling the
- * unused time representation so switching all-day <-> timed stays consistent.
- */
-function newEventToPatch(input: NewEvent): Partial<EventRow> {
-  const common: Partial<EventRow> = {
-    title: input.title,
-    description: input.description ?? null,
-    category: input.category ?? null,
-    visibility: input.visibility ?? 'private',
-    rrule: input.rrule ?? null, // editing a one-off can add/remove recurrence
-  };
-  if (input.allDay) {
-    return {
-      ...common,
-      allDay: true,
-      startAt: null,
-      endAt: null,
-      startDate: input.startDate,
-      endDate: input.endDate,
-    };
-  }
-  return {
-    ...common,
-    allDay: false,
-    startAt: input.startAt,
-    endAt: input.endAt,
-    startDate: null,
-    endDate: null,
-  };
 }

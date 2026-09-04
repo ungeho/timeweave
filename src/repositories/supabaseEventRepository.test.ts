@@ -48,7 +48,7 @@ describe('SupabaseEventRepository.createException', () => {
       start_at: '2026-08-31T06:00:00.000Z', end_at: '2026-08-31T07:00:00.000Z',
       start_date: null, end_date: null, rrule: null, recurrence_id: 'm',
       recurrence_slot_start: '2026-08-31T00:00:00.000Z', recurrence_slot_date: null,
-      is_cancelled: false, created_at: '2026-01-01T00:00:00.000Z', updated_at: '2026-01-01T00:00:00.000Z',
+      is_cancelled: false, timezone: null, created_at: '2026-01-01T00:00:00.000Z', updated_at: '2026-01-01T00:00:00.000Z',
     };
     const repo = new SupabaseEventRepository();
     const row = await repo.createException(input);

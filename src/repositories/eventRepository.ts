@@ -11,7 +11,17 @@ import type { EventRow, ExceptionInput, NewEvent } from '../types/event';
 import { newId } from '../utils/id';
 import { nowIso } from '../utils/datetime';
 import { isSupabaseConfigured } from '../lib/supabase';
-import { DuplicateExceptionError } from '../errors';
+import {
+  DuplicateExceptionError,
+  InvalidTimezoneError,
+  TimezoneClearedError,
+  TimezoneRequiredError,
+} from '../errors';
+import {
+  timezonePlacementOk,
+  timezoneTransitionError,
+  type TimezoneShape,
+} from '../services/timezoneRules';
 import { SupabaseEventRepository } from './supabaseEventRepository';
 
 export interface EventRepository {
@@ -33,6 +43,42 @@ export interface EventRepository {
 }
 
 const STORAGE_KEY = 'timeweave.events.v1';
+
+/**
+ * Enforce the events.timezone invariants that migration 0008 enforces in the
+ * database, so local mode behaves the same way and the same domain errors reach
+ * the UI. The decision itself lives in services/timezoneRules, which is the
+ * TypeScript twin of the SQL trigger.
+ *
+ * The one rule that cannot be replicated is the VALUE check: the DB requires an
+ * exact pg_timezone_names row, which no browser API exposes. Local mode falls
+ * back to the shape rules in utils/timezone, so a name the DB would refuse can
+ * survive here. That divergence is one-directional and harmless — local mode
+ * has no Free/Busy sharing, and any row later written to Supabase is validated
+ * there.
+ */
+function assertTimezoneRules(prev: EventRow | null, next: EventRow, isInsert: boolean): void {
+  const shape = (row: EventRow): TimezoneShape => ({
+    allDay: row.allDay,
+    rrule: row.rrule,
+    recurrenceId: row.recurrenceId,
+    timezone: row.timezone,
+  });
+
+  if (!timezonePlacementOk(shape(next))) {
+    throw new InvalidTimezoneError(
+      'タイムゾーンを持てるのは時刻ありの繰り返し予定だけです',
+    );
+  }
+
+  const violation = timezoneTransitionError(
+    isInsert,
+    prev === null ? null : shape(prev),
+    shape(next),
+  );
+  if (violation === 'TIMEWEAVE_TZ_REQUIRED') throw new TimezoneRequiredError();
+  if (violation === 'TIMEWEAVE_TZ_CLEARED') throw new TimezoneClearedError();
+}
 
 /**
  * Local-only implementation backed by `localStorage`, used when Supabase is not
@@ -64,9 +110,12 @@ export class LocalStorageEventRepository implements EventRepository {
       recurrenceSlotStart: null,
       recurrenceSlotDate: null,
       isCancelled: false,
+      // Only a timed recurrence master carries one; see eventToInsert.
+      timezone: !input.allDay && input.rrule != null ? input.timezone : null,
       createdAt: now,
       updatedAt: now,
     };
+    assertTimezoneRules(null, row, true);
     const all = this.readAll();
     all.push(row);
     this.writeAll(all);
@@ -77,13 +126,17 @@ export class LocalStorageEventRepository implements EventRepository {
     const all = this.readAll();
     const idx = all.findIndex((e) => e.id === id);
     if (idx === -1) throw new Error(`Event not found: ${id}`);
+    const prev = all[idx]!;
     const updated: EventRow = {
-      ...all[idx]!,
+      ...prev,
       ...patch,
       id,
-      ownerId: all[idx]!.ownerId,
+      ownerId: prev.ownerId,
       updatedAt: nowIso(),
     };
+    // A patch that omits `timezone` inherits the previous value, which is what
+    // keeps a legacy master (M0) editable without acquiring a guessed zone.
+    assertTimezoneRules(prev, updated, false);
     all[idx] = updated;
     this.writeAll(all);
     return updated;
@@ -123,6 +176,7 @@ export class LocalStorageEventRepository implements EventRepository {
       recurrenceSlotStart: input.recurrenceSlotStart,
       recurrenceSlotDate: input.recurrenceSlotDate,
       isCancelled: input.isCancelled,
+      timezone: null, // a snapshot pins absolute times; a zone is never used
       createdAt: now,
       updatedAt: now,
     };
@@ -136,7 +190,11 @@ export class LocalStorageEventRepository implements EventRepository {
     if (!raw) return [];
     try {
       const parsed = JSON.parse(raw);
-      return Array.isArray(parsed) ? (parsed as EventRow[]) : [];
+      if (!Array.isArray(parsed)) return [];
+      // Rows written before Phase 5b-2 have no `timezone` key at all. Filling
+      // in null is a read-time shape fix, NOT a backfill: a legacy timed master
+      // stays a legacy timed master (M0) and never acquires a guessed zone.
+      return (parsed as EventRow[]).map((row) => ({ ...row, timezone: row.timezone ?? null }));
     } catch {
       return [];
     }

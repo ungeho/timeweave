@@ -25,6 +25,7 @@ export interface EventDbRow {
   recurrence_slot_start: string | null;
   recurrence_slot_date: string | null;
   is_cancelled: boolean;
+  timezone: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -47,6 +48,7 @@ export function rowToEvent(row: EventDbRow): EventRow {
     recurrenceSlotStart: row.recurrence_slot_start,
     recurrenceSlotDate: row.recurrence_slot_date,
     isCancelled: row.is_cancelled,
+    timezone: row.timezone ?? null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -58,7 +60,14 @@ export type EventInsert = Omit<
   'id' | 'owner_id' | 'created_at' | 'updated_at'
 >;
 
-/** Build INSERT columns from create input, honouring the all-day discriminant. */
+/**
+ * Build INSERT columns from create input, honouring the all-day discriminant.
+ *
+ * `timezone` is set only for a timed recurrence master, matching the DB's
+ * `events_timezone_placement` CHECK. The NewEvent union already makes the other
+ * shapes unable to carry one, so this is where that guarantee turns into an
+ * explicit null rather than an absent column.
+ */
 export function eventToInsert(input: NewEvent): EventInsert {
   const common = {
     title: input.title,
@@ -80,6 +89,7 @@ export function eventToInsert(input: NewEvent): EventInsert {
       end_at: null,
       start_date: input.startDate,
       end_date: input.endDate,
+      timezone: null, // all-day is pure date arithmetic; a zone is never used
     };
   }
   return {
@@ -89,6 +99,9 @@ export function eventToInsert(input: NewEvent): EventInsert {
     end_at: input.endAt,
     start_date: null,
     end_date: null,
+    // Only the recurring arm of NewEvent carries one; a timed one-off pins an
+    // absolute instant and needs no zone.
+    timezone: input.rrule != null ? input.timezone : null,
   };
 }
 
@@ -97,9 +110,14 @@ export function eventToInsert(input: NewEvent): EventInsert {
  * master occurrence). Exceptions never carry their own rrule. owner_id/id/
  * timestamps come from DB defaults; the slot-key/all_day shape is already
  * validated upstream (buildException/buildCancellation) and by DB CHECKs.
+ *
+ * `timezone` is always null: a zone describes a recurrence RULE, and an
+ * exception is a snapshot that already pins absolute times, so there is nothing
+ * for one to affect. The DB's placement CHECK refuses it outright.
  */
 export function exceptionToInsert(input: ExceptionInput): EventInsert {
   return {
+    timezone: null,
     title: input.title,
     description: input.description,
     category: input.category,
@@ -134,6 +152,7 @@ const FIELD_TO_COLUMN: Record<keyof EventRow, keyof EventDbRow> = {
   recurrenceSlotStart: 'recurrence_slot_start',
   recurrenceSlotDate: 'recurrence_slot_date',
   isCancelled: 'is_cancelled',
+  timezone: 'timezone',
   createdAt: 'created_at',
   updatedAt: 'updated_at',
 };

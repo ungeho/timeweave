@@ -10,7 +10,7 @@
 import type { EventRepository } from './eventRepository';
 import type { EventRow, ExceptionInput, NewEvent } from '../types/event';
 import { requireSupabase } from '../lib/supabase';
-import { DuplicateExceptionError } from '../errors';
+import { mapEventWriteError } from './eventWriteError';
 import {
   eventPatchToColumns,
   eventToInsert,
@@ -34,7 +34,7 @@ export class SupabaseEventRepository implements EventRepository {
       .insert(eventToInsert(input))
       .select()
       .single();
-    if (error) throw new Error(error.message);
+    if (error) throw mapEventWriteError(error);
     return rowToEvent(data as EventDbRow);
   }
 
@@ -45,7 +45,7 @@ export class SupabaseEventRepository implements EventRepository {
       .eq('id', id)
       .select()
       .single();
-    if (error) throw new Error(error.message);
+    if (error) throw mapEventWriteError(error);
     return rowToEvent(data as EventDbRow);
   }
 
@@ -61,11 +61,7 @@ export class SupabaseEventRepository implements EventRepository {
       .insert(exceptionToInsert(input))
       .select()
       .single();
-    if (error) {
-      // Partial unique index violation -> a domain error the UI can present.
-      if (error.code === '23505') throw new DuplicateExceptionError();
-      throw new Error(error.message);
-    }
+    if (error) throw mapEventWriteError(error);
     return rowToEvent(data as EventDbRow);
   }
 }

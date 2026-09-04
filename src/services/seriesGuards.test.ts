@@ -6,7 +6,7 @@ const row = (over: Partial<EventRow>): EventRow => ({
   id: 'x', ownerId: 'u', title: 't', description: null, category: null, visibility: 'private',
   allDay: false, startAt: '2026-08-24T00:00:00.000Z', endAt: '2026-08-24T01:00:00.000Z',
   startDate: null, endDate: null, rrule: null, recurrenceId: null,
-  recurrenceSlotStart: null, recurrenceSlotDate: null, isCancelled: false,
+  recurrenceSlotStart: null, recurrenceSlotDate: null, isCancelled: false, timezone: null,
   createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z', ...over,
 });
 

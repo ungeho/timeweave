@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import type { EventOccurrence, EventRow, NewEvent } from '../types/event';
+import type { EventEditInput, EventOccurrence, EventRow } from '../types/event';
 import type { EventRepository } from '../repositories/eventRepository';
-import { SeriesEditBlockedError } from '../errors';
-import { deleteOccurrence, editOccurrence, masterIdOf } from './recurrenceOps';
+import { InvalidTimezoneError, SeriesEditBlockedError } from '../errors';
+import { deleteOccurrence, editOccurrence, masterIdOf, setSeriesTimezone } from './recurrenceOps';
 
 /** A repository that records every call (method + args) instead of persisting. */
 interface Call {
@@ -42,7 +42,7 @@ const master: EventRow = {
   id: 'm', ownerId: 'u', title: '定例会', description: 'メモ', category: '仕事', visibility: 'busy_only',
   allDay: false, startAt: '2026-08-24T00:00:00.000Z', endAt: '2026-08-24T01:00:00.000Z',
   startDate: null, endDate: null, rrule: 'FREQ=WEEKLY;BYDAY=MO', recurrenceId: null,
-  recurrenceSlotStart: null, recurrenceSlotDate: null, isCancelled: false,
+  recurrenceSlotStart: null, recurrenceSlotDate: null, isCancelled: false, timezone: null,
   createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z',
 };
 
@@ -61,9 +61,20 @@ const exceptionOcc: EventOccurrence = {
   allDay: false, occurrenceKey: SLOT, isException: true,
 };
 
-const edited: NewEvent = {
+const edited: EventEditInput = {
   title: '変更後', description: null, category: null, visibility: 'private',
   allDay: false, startAt: '2026-08-31T02:00:00.000Z', endAt: '2026-08-31T03:00:00.000Z',
+};
+
+/** An all-day series (state N: a zone is neither carried nor needed). */
+const allDayMaster: EventRow = {
+  ...master, id: 'a', allDay: true, startAt: null, endAt: null,
+  startDate: '2026-08-24', endDate: '2026-08-25', rrule: 'FREQ=WEEKLY;BYDAY=MO',
+};
+
+const allDayOcc: EventOccurrence = {
+  event: allDayMaster, start: '2026-08-31T00:00:00.000Z', end: '2026-09-01T00:00:00.000Z',
+  allDay: true, occurrenceKey: '2026-08-31', isException: false,
 };
 
 describe('masterIdOf', () => {
@@ -124,6 +135,87 @@ describe('editOccurrence scope="all"', () => {
     await editOccurrence(repo, [master], exceptionOcc, edited, 'all');
     expect(calls[0]!.method).toBe('update');
     expect(calls[0]!.args[0]).toBe('m');
+  });
+});
+
+/**
+ * The timezone half of a scope-'all' edit. Only this path reaches
+ * rowPatchFromEdit, so it is the only place an edit can touch the column.
+ */
+describe('editOccurrence scope="all" — timezone', () => {
+  it('adopts a zone in the same patch when an all-day series turns timed', async () => {
+    const { repo, calls } = fakeRepo();
+    await editOccurrence(
+      repo,
+      [allDayMaster],
+      allDayOcc,
+      { ...edited, rrule: 'FREQ=WEEKLY;BYDAY=TU' },
+      'all',
+      { kind: 'adopt', timezone: 'Asia/Tokyo' },
+    );
+    expect(calls[0]!.args[1]).toMatchObject({
+      allDay: false,
+      rrule: 'FREQ=WEEKLY;BYDAY=TU',
+      timezone: 'Asia/Tokyo',
+    });
+  });
+
+  it('leaves the column out of the patch for an ordinary edit of a zoned series', async () => {
+    const { repo, calls } = fakeRepo();
+    const zoned: EventRow = { ...master, timezone: 'Asia/Tokyo' };
+    await editOccurrence(repo, [zoned], generatedOcc, { ...edited, rrule: master.rrule }, 'all');
+    expect('timezone' in (calls[0]!.args[1] as object)).toBe(false);
+  });
+
+  it('ignores the intent for scope "only": an exception row never carries a zone', async () => {
+    const { repo, calls } = fakeRepo();
+    await editOccurrence(repo, [master], generatedOcc, edited, 'only', {
+      kind: 'adopt',
+      timezone: 'Asia/Tokyo',
+    });
+    expect(calls[0]!.method).toBe('createException');
+    expect('timezone' in (calls[0]!.args[0] as object)).toBe(false);
+  });
+});
+
+/**
+ * setSeriesTimezone is the ONLY way an existing series' zone changes. It is
+ * guarded like "edit all" because moving the zone moves every occurrence, which
+ * would leave existing exception rows pinned to slots that no longer exist.
+ */
+describe('setSeriesTimezone', () => {
+  it('updates only the timezone column of the master', async () => {
+    const { repo, calls } = fakeRepo();
+    await setSeriesTimezone(repo, [master], 'm', 'Asia/Tokyo');
+    expect(calls).toEqual([{ method: 'update', args: ['m', { timezone: 'Asia/Tokyo' }] }]);
+  });
+
+  it('writes nothing when the zone is unchanged, even with exceptions present', async () => {
+    const zoned: EventRow = { ...master, timezone: 'Asia/Tokyo' };
+    const { repo, calls } = fakeRepo();
+    await setSeriesTimezone(repo, [zoned, exceptionRow], 'm', 'Asia/Tokyo');
+    expect(calls).toHaveLength(0);
+  });
+
+  it('is blocked when the series already has exceptions', async () => {
+    const { repo, calls } = fakeRepo();
+    await expect(setSeriesTimezone(repo, [master, exceptionRow], 'm', 'Asia/Tokyo'))
+      .rejects.toBeInstanceOf(SeriesEditBlockedError);
+    expect(calls).toHaveLength(0);
+  });
+
+  it('refuses a row that is not a timed master', async () => {
+    const { repo, calls } = fakeRepo();
+    await expect(setSeriesTimezone(repo, [allDayMaster], 'a', 'Asia/Tokyo'))
+      .rejects.toBeInstanceOf(InvalidTimezoneError);
+    expect(calls).toHaveLength(0);
+  });
+
+  it('refuses a zone the database would not store', async () => {
+    const { repo, calls } = fakeRepo();
+    await expect(setSeriesTimezone(repo, [master], 'm', 'posix/Asia/Tokyo'))
+      .rejects.toBeInstanceOf(InvalidTimezoneError);
+    expect(calls).toHaveLength(0);
   });
 });
 

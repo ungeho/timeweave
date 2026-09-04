@@ -54,27 +54,110 @@ export interface EventRow {
   /** "Delete this occurrence" tombstone (only meaningful on exception rows). */
   isCancelled: boolean;
 
+  /**
+   * IANA zone a TIMED recurrence master's wall clock is anchored in — the zone
+   * `startAt` should be read in to recover the rule's DTSTART. null everywhere
+   * else (all-day rows, timed one-offs, exception snapshots) and null on
+   * masters created before Phase 5b-2. Stored verbatim, never canonicalised:
+   * an alias such as "Asia/Calcutta" resolves to the same rules as its primary
+   * name, and the database does not normalise it either.
+   */
+  timezone: string | null;
+
   createdAt: string;
   updatedAt: string;
 }
 
-/** Fields common to any new event, regardless of all-day-ness. */
-interface NewEventBase {
+/** Display fields shared by create and edit inputs. */
+interface EventContent {
   title: string;
   description?: string | null;
   category?: string | null;
   visibility?: Visibility;
-  rrule?: string | null;
 }
 
 /**
- * Input for creating an event. Discriminated on `allDay` so callers must
+ * Input for CREATING an event. Discriminated on `allDay` so callers must
  * provide the matching time representation — the compiler prevents mixing
  * instants and dates.
+ *
+ * A new TIMED RECURRENCE must declare its time zone: the series repeats at a
+ * wall-clock time, so across a DST boundary the instants shift, and `startAt`
+ * alone cannot reproduce them. There is no defensible default, and guessing one
+ * would silently decide what the series means. The other three shapes cannot
+ * carry a zone at all (`timezone?: never`), mirroring the DB's placement CHECK.
  */
 export type NewEvent =
-  | (NewEventBase & { allDay?: false; startAt: string; endAt: string })
-  | (NewEventBase & { allDay: true; startDate: string; endDate: string });
+  // all-day, one-off or recurring
+  | (EventContent & {
+      allDay: true;
+      startDate: string;
+      endDate: string;
+      rrule?: string | null;
+      timezone?: never;
+    })
+  // timed one-off
+  | (EventContent & {
+      allDay?: false;
+      startAt: string;
+      endAt: string;
+      rrule?: null;
+      timezone?: never;
+    })
+  // timed recurrence master
+  | (EventContent & {
+      allDay?: false;
+      startAt: string;
+      endAt: string;
+      rrule: string;
+      timezone: string;
+    });
+
+/**
+ * Input for EDITING an existing event or occurrence. Deliberately has NO
+ * `timezone` member in any shape.
+ *
+ * An ordinary edit must never touch the column. A legacy master (timezone null,
+ * created before 5b-2) has to stay editable without acquiring a guessed zone,
+ * and a master that already has one must not have it rewritten as a side effect
+ * of renaming the event. Both follow from the field simply not being
+ * expressible here. Acquiring a zone travels in `TimezoneIntent`; changing an
+ * existing series' zone goes through `setSeriesTimezone` and nowhere else.
+ */
+export type EventEditInput =
+  | (EventContent & {
+      allDay: true;
+      startDate: string;
+      endDate: string;
+      rrule?: string | null;
+      timezone?: never;
+    })
+  | (EventContent & {
+      allDay?: false;
+      startAt: string;
+      endAt: string;
+      rrule?: string | null;
+      timezone?: never;
+    });
+
+/**
+ * What an edit should do to `timezone`. Kept OUT of `EventEditInput` so an
+ * ordinary edit cannot carry a zone even by accident.
+ *
+ * - `keep`  — every ordinary edit. The column is left untouched (the patch
+ *   omits the key, so a legacy null stays null and an existing zone survives)
+ *   or explicitly nulled when the row stops being a timed master.
+ * - `adopt` — the row is BECOMING a timed recurrence master: a one-off gains an
+ *   rrule, or an all-day series turns timed. It is acquiring a zone for the
+ *   first time, in the same UPDATE that adds the rule — which is why the value
+ *   travels with the edit rather than through `setSeriesTimezone`.
+ *
+ * `adopt` on a row that is ALREADY a timed master is rejected: that would be
+ * changing an existing series' zone, and `setSeriesTimezone` is the only path.
+ */
+export type TimezoneIntent =
+  | { kind: 'keep' }
+  | { kind: 'adopt'; timezone: string };
 
 /** Scope of an edit/delete on a recurring occurrence. */
 export type EditScope = 'only' | 'all';

@@ -56,6 +56,7 @@ function row(input: RowInput): EventRow {
     recurrenceSlotStart: null,
     recurrenceSlotDate: input.recurrenceSlotDate ?? null,
     isCancelled: input.isCancelled ?? false,
+    timezone: null,
     createdAt: '2026-01-01T00:00:00.000Z',
     updatedAt: '2026-01-01T00:00:00.000Z',
   };

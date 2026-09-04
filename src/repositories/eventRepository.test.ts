@@ -16,10 +16,12 @@ beforeEach(() => {
   } as Storage;
 });
 
+// A timed recurrence master. Since Phase 5b-2 the zone is part of the input:
+// the series repeats at a wall-clock time, so it cannot be inferred later.
 const masterInput: NewEvent = {
   title: '定例会', allDay: false,
   startAt: '2026-08-24T00:00:00.000Z', endAt: '2026-08-24T01:00:00.000Z',
-  rrule: 'FREQ=WEEKLY;BYDAY=MO',
+  rrule: 'FREQ=WEEKLY;BYDAY=MO', timezone: 'Asia/Tokyo',
 };
 
 const exceptionInput = (recurrenceId: string): ExceptionInput => ({

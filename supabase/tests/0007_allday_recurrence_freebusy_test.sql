@@ -568,9 +568,14 @@ begin
   --     5b-1 adds no timed exception busy, so its parent (necessarily timed)
   --     must force incomplete via branch (C).
   -- =====================================================================
-  insert into public.events (id, owner_id, title, visibility, all_day, start_at, end_at, rrule)
+  -- timezone is required since 0008: any NEW timed master is M1. Adding UTC does
+  -- not change this test -- rrule_sql_subset rejects every timed rule whatever
+  -- the zone, so the series stays unsupported here.
+  insert into public.events (id, owner_id, title, visibility, all_day, start_at, end_at, rrule,
+                             timezone)
   values (v_m, v_owner, '', 'private', false,
-          timestamptz '2026-08-01 01:00:00+00', timestamptz '2026-08-01 02:00:00+00', 'FREQ=DAILY');
+          timestamptz '2026-08-01 01:00:00+00', timestamptz '2026-08-01 02:00:00+00', 'FREQ=DAILY',
+          'UTC');
   insert into public.events (id, owner_id, title, visibility, all_day, start_at, end_at,
                              recurrence_id, recurrence_slot_start, is_cancelled)
   values (v_x, v_owner, '', 'busy_only', false,
@@ -609,10 +614,22 @@ begin
 
   delete from public.events where id = v_m;
 
-  -- timed recurrence
-  insert into public.events (id, owner_id, title, visibility, all_day, start_at, end_at, rrule)
-  values (v_m, v_owner, '', 'busy_only', false,
-          timestamptz '2026-08-01 01:00:00+00', timestamptz '2026-08-01 02:00:00+00', 'FREQ=DAILY');
+  -- timed recurrence. Since 0008 a new timed master must carry a timezone (M1);
+  -- UTC does not affect the assertion below, which is about the rule not being
+  -- in the SQL subset.
+  insert into public.events (id, owner_id, title, visibility, all_day, start_at, end_at, rrule,
+                             timezone)
+  values (
+    v_m,
+    v_owner,
+    '',
+    'busy_only',
+    false,
+    timestamptz '2026-08-01 01:00:00+00',
+    timestamptz '2026-08-01 02:00:00+00',
+    'FREQ=DAILY',
+    'UTC'
+  );
   v_res := public.get_free_busy(v_tok_ok, v_from, v_to, v_fromd, v_tod);
   assert (v_res->>'complete')::boolean = false, '3.8e timed recurrence still incomplete';
   assert v_res->'slots' = '[]'::jsonb, '3.8e timed recurrence contributes no slots';

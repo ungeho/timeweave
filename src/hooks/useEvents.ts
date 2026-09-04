@@ -5,12 +5,20 @@
  */
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import type { EditScope, EventOccurrence, EventRow, NewEvent } from '../types/event';
+import type {
+  EditScope,
+  EventEditInput,
+  EventOccurrence,
+  EventRow,
+  NewEvent,
+  TimezoneIntent,
+} from '../types/event';
 import { getEventRepository } from '../repositories/eventRepository';
 import { expandEvents } from '../services/occurrences';
 import {
   editOccurrence as editOccurrenceOp,
   deleteOccurrence as deleteOccurrenceOp,
+  setSeriesTimezone as setSeriesTimezoneOp,
 } from '../services/recurrenceOps';
 
 export interface UseEvents {
@@ -26,14 +34,29 @@ export interface UseEvents {
    * Edit a recurring occurrence. scope 'only' overrides just this occurrence (an
    * exception row, or an in-place update if it's already one); scope 'all' edits
    * the master — blocked with SeriesEditBlockedError if the series has exceptions.
+   *
+   * `intent` carries the zone only when a scope-'all' edit turns an all-day
+   * series timed; every other edit leaves `timezone` alone ('keep').
    */
-  editOccurrence: (occ: EventOccurrence, edited: NewEvent, scope: EditScope) => Promise<void>;
+  editOccurrence: (
+    occ: EventOccurrence,
+    edited: EventEditInput,
+    scope: EditScope,
+    intent?: TimezoneIntent,
+  ) => Promise<void>;
   /**
    * Delete a recurring occurrence. scope 'only' cancels just this occurrence (a
    * tombstone, or flips an existing exception to cancelled); scope 'all' deletes
    * the master and cascades to all its exceptions.
    */
   deleteOccurrence: (occ: EventOccurrence, scope: EditScope) => Promise<void>;
+  /**
+   * Set or change the zone of an existing timed recurrence master. Deliberately
+   * separate from every save path: an ordinary edit must never move a series,
+   * and this one is blocked with SeriesEditBlockedError when the series has
+   * exceptions (their slot keys would go stale).
+   */
+  setSeriesTimezone: (masterId: string, timezone: string) => Promise<void>;
   reload: () => Promise<void>;
 }
 
@@ -84,8 +107,13 @@ export function useEvents(): UseEvents {
   );
 
   const editOccurrence = useCallback(
-    async (occ: EventOccurrence, edited: NewEvent, scope: EditScope) => {
-      await editOccurrenceOp(repo, rows, occ, edited, scope);
+    async (
+      occ: EventOccurrence,
+      edited: EventEditInput,
+      scope: EditScope,
+      intent: TimezoneIntent = { kind: 'keep' },
+    ) => {
+      await editOccurrenceOp(repo, rows, occ, edited, scope, intent);
       await reload();
     },
     [repo, reload, rows],
@@ -97,6 +125,14 @@ export function useEvents(): UseEvents {
       await reload();
     },
     [repo, reload],
+  );
+
+  const setSeriesTimezone = useCallback(
+    async (masterId: string, timezone: string) => {
+      await setSeriesTimezoneOp(repo, rows, masterId, timezone);
+      await reload();
+    },
+    [repo, reload, rows],
   );
 
   const occurrencesIn = useCallback(
@@ -115,6 +151,7 @@ export function useEvents(): UseEvents {
     remove,
     editOccurrence,
     deleteOccurrence,
+    setSeriesTimezone,
     reload,
   };
 }
