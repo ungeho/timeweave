@@ -561,7 +561,13 @@ begin
 end $$;
 
 -- ============================================================================
--- SECTION 6 -- get_free_busy is untouched by 5b-2, and the column never leaks.
+-- SECTION 6 -- timezone NON-DISCLOSURE and Free/Busy payload shape.
+--
+-- What get_free_busy chooses to EXPAND is deliberately out of scope here. That
+-- contract moves with each phase -- 5b-3 made timed DAILY/WEEKLY expandable --
+-- and belongs to the suite of the phase that owns it. This section asserts only
+-- that the column 0008 adds never reaches the public payload, and that the
+-- answer's shape is unchanged.
 --
 -- Starts by removing the B-4 legacy fixture BY ITS FIXED ID: it is a timed
 -- master, and its presence inside a window would flip complete to false. Every
@@ -634,16 +640,17 @@ begin
   assert v_keys <@ array['all_day', 'start', 'end', 'start_date', 'end_date'],
     '6.2b slot keys unchanged';
 
-  -- 6.3 a timed master WITH a zone, inside the window: still unsupported in
-  --     5b-2, contributes no slots, and its zone appears nowhere in the output.
+  -- 6.3 A timed master WITH a zone, inside the window.
+  --     Free/Busy expansion semantics belong to later phases; this section only
+  --     asserts that the stored timezone name never leaks into the public
+  --     payload. Since 5b-3 may expand this series, the leak checks now
+  --     exercise a non-empty timed payload as well.
   insert into public.events (id, owner_id, title, visibility, all_day,
                              start_at, end_at, rrule, timezone)
   values (v_tz, v_owner, '', 'busy_only', false,
           timestamptz '2026-09-02 01:00:00+00', timestamptz '2026-09-02 02:00:00+00',
           'FREQ=DAILY', 'Asia/Tokyo');
   v_res := public.get_free_busy(v_tok, v_from, v_to, v_fromd, v_tod);
-  assert (v_res->>'complete')::boolean = false,
-    '6.3 a timed recurrence is still unsupported in 5b-2';
   assert v_res::text not like '%Asia/Tokyo%', '6.3b the zone never reaches the payload';
   assert v_res::text not like '%timezone%',   '6.3c the word timezone never appears';
 

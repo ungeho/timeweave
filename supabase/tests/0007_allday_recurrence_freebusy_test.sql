@@ -564,17 +564,24 @@ begin
   delete from public.events where id = v_m;
 
   -- =====================================================================
-  -- 3.7 N13 -- a disclosed TIMED exception is never silently dropped.
-  --     5b-1 adds no timed exception busy, so its parent (necessarily timed)
-  --     must force incomplete via branch (C).
+  -- 3.7 N13 -- a disclosed exception is never silently dropped when its parent
+  --     series CANNOT be expanded: the parent must force incomplete via
+  --     branch (C), whatever the parent's own visibility.
   -- =====================================================================
-  -- timezone is required since 0008: any NEW timed master is M1. Adding UTC does
-  -- not change this test -- rrule_sql_subset rejects every timed rule whatever
-  -- the zone, so the series stays unsupported here.
+  -- timezone is required since 0008: any NEW timed master is M1, so UTC is set
+  -- here purely to satisfy the placement rule.
+  --
+  -- THE RULE IS FREQ=MONTHLY ON PURPOSE. This case needs a parent that is
+  -- UNSUPPORTED, not merely timed. 5b-3 (0009) added a timed subset, so a timed
+  -- FREQ=DAILY master with a resolvable zone is now expandable and would make
+  -- this window complete=true -- which is correct behaviour, and is covered by
+  -- the 0009 suite, not here. MONTHLY stays outside the timed subset in 0009
+  -- (see 0009 test 6.11a), so it keeps pinning the fail-closed contract this
+  -- case was written for.
   insert into public.events (id, owner_id, title, visibility, all_day, start_at, end_at, rrule,
                              timezone)
   values (v_m, v_owner, '', 'private', false,
-          timestamptz '2026-08-01 01:00:00+00', timestamptz '2026-08-01 02:00:00+00', 'FREQ=DAILY',
+          timestamptz '2026-08-01 01:00:00+00', timestamptz '2026-08-01 02:00:00+00', 'FREQ=MONTHLY',
           'UTC');
   insert into public.events (id, owner_id, title, visibility, all_day, start_at, end_at,
                              recurrence_id, recurrence_slot_start, is_cancelled)
@@ -584,13 +591,14 @@ begin
 
   v_res := public.get_free_busy(v_tok_priv, v_from, v_to, v_fromd, v_tod);
   assert (v_res->>'complete')::boolean = false,
-    'N13 a visible timed exception under a hidden timed parent forces incomplete';
+    'N13 a visible timed exception under a hidden UNSUPPORTED timed parent '
+    'forces incomplete';
 
   delete from public.events where id = v_x;
   delete from public.events where id = v_m;
 
   -- =====================================================================
-  -- 3.8 Still fail-closed: COUNT, MONTHLY, timed, malformed.
+  -- 3.8 Still fail-closed: COUNT, MONTHLY, timed MONTHLY, malformed.
   -- =====================================================================
   insert into public.events (id, owner_id, title, visibility, all_day, start_date, end_date, rrule)
   values (v_m, v_owner, '', 'busy_only', true, date '2026-08-01', date '2026-08-02',
@@ -614,9 +622,14 @@ begin
 
   delete from public.events where id = v_m;
 
-  -- timed recurrence. Since 0008 a new timed master must carry a timezone (M1);
-  -- UTC does not affect the assertion below, which is about the rule not being
-  -- in the SQL subset.
+  -- A timed master whose rule is OUTSIDE the timed subset. Since 0008 a new
+  -- timed master must carry a timezone (M1), so UTC is set purely to satisfy
+  -- the placement rule; the assertion below is about the RULE, not the zone.
+  --
+  -- FREQ=MONTHLY, not FREQ=DAILY: 5b-3 (0009) added a timed subset covering
+  -- DAILY and WEEKLY, so a timed DAILY master with a resolvable zone now
+  -- expands and reports complete=true with slots. MONTHLY remains outside that
+  -- subset (see 0009 test 6.11a), so it still pins fail-closed here.
   insert into public.events (id, owner_id, title, visibility, all_day, start_at, end_at, rrule,
                              timezone)
   values (
@@ -627,12 +640,14 @@ begin
     false,
     timestamptz '2026-08-01 01:00:00+00',
     timestamptz '2026-08-01 02:00:00+00',
-    'FREQ=DAILY',
+    'FREQ=MONTHLY',
     'UTC'
   );
   v_res := public.get_free_busy(v_tok_ok, v_from, v_to, v_fromd, v_tod);
-  assert (v_res->>'complete')::boolean = false, '3.8e timed recurrence still incomplete';
-  assert v_res->'slots' = '[]'::jsonb, '3.8e timed recurrence contributes no slots';
+  assert (v_res->>'complete')::boolean = false,
+    '3.8e a timed rule outside the subset (MONTHLY) still incomplete';
+  assert v_res->'slots' = '[]'::jsonb,
+    '3.8e a timed rule outside the subset (MONTHLY) contributes no slots';
   delete from public.events where id = v_m;
 
   -- =====================================================================
