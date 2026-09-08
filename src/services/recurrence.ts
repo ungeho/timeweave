@@ -12,6 +12,8 @@
 import type { Freq, RecurrenceRule, RecurrenceUntil, Weekday } from '../types/recurrence';
 import { WEEKDAYS } from '../types/recurrence';
 import { fromIso } from '../utils/datetime';
+import type { ZonedWallClock } from '../utils/timezone';
+import { resolveZonedWallClock, zonedWallClockOf } from '../utils/timezone';
 
 export class UnsupportedRRuleError extends Error {
   constructor(message: string) {
@@ -140,13 +142,31 @@ export function formatRRule(rule: RecurrenceRule): string {
  * within [rangeStartIso, rangeEndIso). COUNT/UNTIL limits are honoured against
  * the full series, not just the visible range.
  *
- * Time-of-day is preserved as local wall-clock across occurrences.
+ * Time-of-day is preserved as wall-clock across occurrences. WHICH ZONE that
+ * wall clock belongs to is `timeZone` (Phase 5b-4):
+ *
+ *   timeZone = an IANA name -- FREQ=DAILY and FREQ=WEEKLY are anchored to that
+ *     zone and resolved exactly as migration 0009 resolves them, gaps and folds
+ *     included (see utils/timezone.resolveZonedWallClock). This is the case for
+ *     a timed recurrence master that carries `events.timezone` (state M1).
+ *
+ *   timeZone = null -- the runtime's local zone, which is what every caller got
+ *     before 5b-4. All-day series pass null (they are pure date arithmetic and
+ *     0007 owns them), and so do legacy M0 masters, whose authoring zone is
+ *     unknowable and must not be guessed. The default keeps that the behaviour
+ *     of every existing caller.
+ *
+ * FREQ=MONTHLY is deliberately NOT zone-aware even when `timeZone` is given:
+ * 0009 does not expand MONTHLY at all (it reports the window incomplete), so
+ * there is no SQL semantics to match, and inventing one here would be a change
+ * nothing pins down. It keeps its pre-5b-4 local-time behaviour exactly.
  */
 export function expandRule(
   rrule: string,
   dtstartIso: string,
   rangeStartIso: string,
   rangeEndIso: string,
+  timeZone: string | null = null,
 ): string[] {
   const rule = parseRRule(rrule);
   const dtstart = fromIso(dtstartIso);
@@ -160,10 +180,49 @@ export function expandRule(
   const untilDate = rule.until?.kind === 'date' ? rule.until.date : undefined;
   const hasUntil = rule.until !== undefined;
 
-  const hour = dtstart.getHours();
-  const minute = dtstart.getMinutes();
-  const second = dtstart.getSeconds();
-  const ms = dtstart.getMilliseconds();
+  // DTSTART's wall clock, read in whichever zone this expansion is anchored to.
+  const dtstartMs = dtstart.getTime();
+  const dtWall: ZonedWallClock =
+    timeZone === null
+      ? {
+          year: dtstart.getFullYear(),
+          month: dtstart.getMonth() + 1,
+          day: dtstart.getDate(),
+          hour: dtstart.getHours(),
+          minute: dtstart.getMinutes(),
+          second: dtstart.getSeconds(),
+          ms: dtstart.getMilliseconds(),
+        }
+      : zonedWallClockOf(dtstartMs, timeZone);
+
+  const hour = dtWall.hour;
+  const minute = dtWall.minute;
+  const second = dtWall.second;
+  const ms = dtWall.ms;
+  const dtCivil: Civil = { year: dtWall.year, month: dtWall.month, day: dtWall.day };
+
+  /**
+   * The instant of an occurrence falling on civil date `c`, at DTSTART's
+   * time-of-day.
+   *
+   * DTSTART ITSELF IS NEVER RECONSTRUCTED (mirrors 0009's
+   * `if v_cl = v_dtl then v_start := p_start_at`). `start_at` is a stored
+   * instant; rendering it into the zone and converting back is lossy exactly on
+   * a fold, which would move the first occurrence of the series by an hour. All
+   * candidates share DTSTART's time of day and differ only in date, so the date
+   * test below identifies that one candidate exactly.
+   */
+  const instantOn = (c: Civil): Date => {
+    if (timeZone === null) {
+      return new Date(c.year, c.month - 1, c.day, hour, minute, second, ms);
+    }
+    if (c.year === dtCivil.year && c.month === dtCivil.month && c.day === dtCivil.day) {
+      return new Date(dtstartMs);
+    }
+    return new Date(
+      resolveZonedWallClock({ ...c, hour, minute, second, ms }, timeZone),
+    );
+  };
 
   const results: string[] = [];
   let emitted = 0;
@@ -185,46 +244,46 @@ export function expandRule(
     return true;
   };
 
+  // BYDAY defaults to DTSTART's own weekday, read in the SAME zone the wall
+  // clock above came from -- browser-local for M0, the master's zone for M1. A
+  // hybrid (zone wall clock, browser weekday) would put occurrences on the
+  // wrong day whenever the two zones disagree about DTSTART's date.
+  const dtWeekdayIndex = civilWeekdayIndex(dtCivil);
   const byDayIndices =
     rule.freq === 'WEEKLY'
-      ? (rule.byDay ?? [weekdayOf(dtstart)]).map(weekdayIndex)
+      ? (rule.byDay ?? [WEEKDAYS[dtWeekdayIndex]!]).map(weekdayIndex)
       : [];
 
   for (let i = 0; i < MAX_ITERATIONS; i++) {
     let keepGoing = true;
 
     if (rule.freq === 'DAILY') {
-      const d = new Date(
-        dtstart.getFullYear(),
-        dtstart.getMonth(),
-        dtstart.getDate() + i * rule.interval,
-        hour, minute, second, ms,
-      );
+      const d = instantOn(civil(dtCivil.year, dtCivil.month, dtCivil.day + i * rule.interval));
       if (d.getTime() >= rangeEnd && rule.count === undefined && !hasUntil) break;
       keepGoing = push(d);
     } else if (rule.freq === 'WEEKLY') {
       // Move to the Monday of dtstart's week, then step `interval` weeks.
-      const weekStart = mondayOfWeek(dtstart);
+      const weekStart = civil(dtCivil.year, dtCivil.month, dtCivil.day - dtWeekdayIndex);
       for (const dayIdx of byDayIndices) {
-        const d = new Date(
-          weekStart.getFullYear(),
-          weekStart.getMonth(),
-          weekStart.getDate() + i * rule.interval * 7 + dayIdx,
-          hour, minute, second, ms,
+        const d = instantOn(
+          civil(weekStart.year, weekStart.month, weekStart.day + i * rule.interval * 7 + dayIdx),
         );
-        if (d.getTime() < dtstart.getTime()) continue; // skip days before series start
+        if (d.getTime() < dtstartMs) continue; // skip days before series start
         keepGoing = push(d);
         if (!keepGoing) break;
       }
-      const probe = new Date(
-        weekStart.getFullYear(),
-        weekStart.getMonth(),
-        weekStart.getDate() + i * rule.interval * 7,
-        hour, minute, second, ms,
+      const probe = instantOn(
+        civil(weekStart.year, weekStart.month, weekStart.day + i * rule.interval * 7),
       );
       if (probe.getTime() >= rangeEnd && rule.count === undefined && !hasUntil) break;
     } else {
       // MONTHLY: same day-of-month as dtstart, stepping `interval` months.
+      //
+      // NOT zone-aware, on purpose (see the function's doc comment): every field
+      // below is read straight off `dtstart` in the runtime's local zone, never
+      // from the zoned wall clock, so passing a `timeZone` cannot turn this into
+      // a half-converted hybrid. 0009 leaves MONTHLY unexpanded, so there is
+      // nothing here to agree with.
       //
       // RFC 5545: a month that has no such day-of-month (e.g. Feb 31, or Feb 29
       // in a common year) is SKIPPED — it yields no occurrence and does not
@@ -236,7 +295,7 @@ export function expandRule(
         dtstart.getFullYear(),
         monthIndex,
         dtstart.getDate(),
-        hour, minute, second, ms,
+        dtstart.getHours(), dtstart.getMinutes(), dtstart.getSeconds(), dtstart.getMilliseconds(),
       );
 
       if (d.getDate() !== dtstart.getDate()) {
@@ -293,18 +352,31 @@ function localDateStr(d: Date): string {
 }
 
 function weekdayIndex(w: Weekday): number {
-  // 0 = Monday .. 6 = Sunday (matches mondayOfWeek offset math).
+  // 0 = Monday .. 6 = Sunday (matches the civilWeekdayIndex offset math and the
+  // array['MO'..'SU'] ordering in migration 0009).
   return WEEKDAYS.indexOf(w);
 }
 
-function weekdayOf(d: Date): Weekday {
-  // JS getDay(): 0=Sun..6=Sat -> our MO-first array.
-  const jsDay = d.getDay();
-  const idx = (jsDay + 6) % 7;
-  return WEEKDAYS[idx]!;
+/**
+ * A calendar date with no zone and no time attached — the frame the candidate
+ * dates of a series are generated in. Keeping the date arithmetic separate from
+ * the wall-clock-to-instant step is what lets one loop serve both the
+ * local-time and the zone-anchored modes. `month` is 1-12.
+ */
+interface Civil {
+  year: number;
+  month: number;
+  day: number;
 }
 
-function mondayOfWeek(d: Date): Date {
-  const idx = (d.getDay() + 6) % 7; // days since Monday
-  return new Date(d.getFullYear(), d.getMonth(), d.getDate() - idx, 0, 0, 0, 0);
+/** Normalise a civil date whose day may be out of range (Jan 32 -> Feb 1). */
+function civil(year: number, month: number, day: number): Civil {
+  const t = new Date(Date.UTC(year, month - 1, day));
+  return { year: t.getUTCFullYear(), month: t.getUTCMonth() + 1, day: t.getUTCDate() };
+}
+
+/** Weekday of a civil date, 0 = Monday .. 6 = Sunday. Zone-independent. */
+function civilWeekdayIndex(c: Civil): number {
+  const jsDay = new Date(Date.UTC(c.year, c.month - 1, c.day)).getUTCDay(); // 0=Sun..6=Sat
+  return (jsDay + 6) % 7;
 }

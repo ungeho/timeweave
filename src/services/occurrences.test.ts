@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { EventRow } from '../types/event';
 import { expandEvents, normalizedSlotKey } from './occurrences';
+import { expandRule } from './recurrence';
 
 /** A timed one-off base row; override per test. */
 const base = (over: Partial<EventRow>): EventRow => ({
@@ -339,5 +340,128 @@ describe('normalizedSlotKey', () => {
   it('compares all-day keys verbatim as YYYY-MM-DD', () => {
     expect(normalizedSlotKey('2026-09-14', true)).toBe('2026-09-14');
     expect(normalizedSlotKey('2026-09-14', true)).not.toBe(normalizedSlotKey('2026-09-15', true));
+  });
+});
+
+/**
+ * Phase 5b-4 — the zone reaches the expander from the ROW.
+ *
+ * `expandEvents` keeps its signature: the zone a timed master is anchored to
+ * lives on the row (`events.timezone`), not on the view, so it is read here
+ * rather than threaded down from the calendar. These cases pin that wiring, and
+ * the boundaries around it — all-day, and legacy M0.
+ *
+ * Instants are explicit UTC, so nothing below depends on the runtime's zone.
+ * (Every OTHER test in this file builds rows with `timezone: null`, which makes
+ * the whole existing suite the M0 regression suite for this change.)
+ */
+describe('expandEvents — zone-anchored masters (5b-4)', () => {
+  const NY = 'America/New_York';
+  const dstRange = { start: '2026-10-29T00:00:00.000Z', end: '2026-11-03T00:00:00.000Z' };
+
+  /** A DAILY master at 01:30 New York, i.e. straight through the autumn fold. */
+  const nyMaster = (over: Partial<EventRow> = {}): EventRow =>
+    base({
+      id: 'm',
+      startAt: '2026-10-30T05:30:00.000Z', // 01:30 EDT
+      endAt: '2026-10-30T06:30:00.000Z',
+      rrule: 'FREQ=DAILY',
+      timezone: NY,
+      ...over,
+    });
+
+  it('C1 expands a master in ITS zone, resolving the fold the way 0009 does', () => {
+    const occ = expandEvents([nyMaster()], dstRange.start, dstRange.end);
+    expect(occ.map((o) => o.start)).toEqual([
+      '2026-10-30T05:30:00.000Z', // 01:30 EDT (DTSTART, emitted verbatim)
+      '2026-10-31T05:30:00.000Z', // 01:30 EDT
+      '2026-11-01T06:30:00.000Z', // 01:30 EST — the LATER of the two 01:30s
+      '2026-11-02T06:30:00.000Z', // 01:30 EST
+    ]);
+    // The occurrence key an exception would be pinned to is that same instant.
+    expect(occ[2]!.occurrenceKey).toBe('2026-11-01T06:30:00.000Z');
+  });
+
+  it('C2 leaves a legacy M0 master (timezone null) on the local-time path', () => {
+    const row = nyMaster({ timezone: null });
+    const occ = expandEvents([row], dstRange.start, dstRange.end);
+    // Identical to asking the expander directly with no zone. `expandEvents`
+    // widens the window left by the duration before expanding, so the same
+    // widening is applied here.
+    const durationMs = Date.parse(row.endAt!) - Date.parse(row.startAt!);
+    const expected = expandRule(
+      row.rrule!,
+      row.startAt!,
+      new Date(Date.parse(dstRange.start) - durationMs).toISOString(),
+      dstRange.end,
+    );
+    expect(occ.map((o) => o.start)).toEqual(expected);
+  });
+
+  it('C3 never lets a zone reach the all-day path', () => {
+    // The database forbids a zone on an all-day row (events_timezone_placement),
+    // so this shape is defensive: even if one appeared, all-day expansion is
+    // pure date arithmetic and must be bit-for-bit what it was before 5b-4.
+    const allDay = (timezone: string | null): EventRow =>
+      base({
+        id: 'a',
+        allDay: true,
+        startAt: null,
+        endAt: null,
+        startDate: '2026-11-01',
+        endDate: '2026-11-02',
+        rrule: 'FREQ=DAILY',
+        timezone,
+      });
+    const from = new Date(2026, 10, 1).toISOString();
+    const to = new Date(2026, 10, 4).toISOString();
+
+    const withZone = expandEvents([allDay(NY)], from, to);
+    const withoutZone = expandEvents([allDay(null)], from, to);
+    expect(withZone.map((o) => o.start)).toEqual(withoutZone.map((o) => o.start));
+    expect(withZone.map((o) => o.occurrenceKey)).toEqual(['2026-11-01', '2026-11-02', '2026-11-03']);
+  });
+
+  it('C4 detaches an exception whose slot matches the newly generated instant', () => {
+    const ex = base({
+      id: 'x',
+      recurrenceId: 'm',
+      recurrenceSlotStart: '2026-11-01T06:30:00.000Z', // what C1 now generates
+      startAt: '2026-11-01T10:00:00.000Z',
+      endAt: '2026-11-01T11:00:00.000Z',
+      isCancelled: false,
+    });
+    const occ = expandEvents([nyMaster(), ex], dstRange.start, dstRange.end);
+    expect(occ.map((o) => o.start)).toEqual([
+      '2026-10-30T05:30:00.000Z',
+      '2026-10-31T05:30:00.000Z',
+      '2026-11-01T10:00:00.000Z', // the override, in place of the 06:30Z slot
+      '2026-11-02T06:30:00.000Z',
+    ]);
+    expect(occ.filter((o) => o.isException)).toHaveLength(1);
+  });
+
+  it('C5 does NOT rescue a slot written by the pre-5b-4 expander (case C is out of scope)', () => {
+    // A slot recorded before this change may name the EARLIER instant of a fold
+    // (05:30Z here). Nothing generates that any more, so the original occurrence
+    // is not detached and the day shows both rows. Rescuing those keys was
+    // deliberately excluded from 5b-4; this test states the consequence rather
+    // than hiding it.
+    const stale = base({
+      id: 'x',
+      recurrenceId: 'm',
+      recurrenceSlotStart: '2026-11-01T05:30:00.000Z', // pre-5b-4 value
+      startAt: '2026-11-01T10:00:00.000Z',
+      endAt: '2026-11-01T11:00:00.000Z',
+      isCancelled: false,
+    });
+    const occ = expandEvents([nyMaster(), stale], dstRange.start, dstRange.end);
+    expect(occ.map((o) => o.start)).toEqual([
+      '2026-10-30T05:30:00.000Z',
+      '2026-10-31T05:30:00.000Z',
+      '2026-11-01T06:30:00.000Z', // still there: the slot key no longer matches
+      '2026-11-01T10:00:00.000Z',
+      '2026-11-02T06:30:00.000Z',
+    ]);
   });
 });

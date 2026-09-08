@@ -120,11 +120,18 @@ export function expandEvents(
     // one-off rows and exceptions already get. Widening only changes which starts
     // are collected: expansion always iterates from DTSTART, so COUNT, UNTIL and
     // the loop's break conditions are unaffected.
+    // The zone a timed master's wall clock is anchored to travels with the ROW
+    // (events.timezone), not with the view, so it is read here rather than
+    // threaded down from the calendar. All-day masters pass null explicitly:
+    // they are pure date arithmetic and a zone would be meaningless. A legacy
+    // M0 master (timezone null) also passes null and keeps expanding in the
+    // runtime's local zone, exactly as before Phase 5b-4.
     const starts = expandRule(
       ev.rrule,
       span.start,
       toIso(new Date(rangeStart - durationMs)),
       rangeEndIso,
+      ev.allDay ? null : ev.timezone,
     );
     for (const startIso of starts) {
       const endIso = toIso(new Date(fromIso(startIso).getTime() + durationMs));

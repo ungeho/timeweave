@@ -301,3 +301,255 @@ describe('expandRule — MONTHLY month-end (RFC 5545 skip)', () => {
     expect(dayKeys(occ)).toEqual(['2026-03-31']);
   });
 });
+
+/**
+ * Phase 5b-4 — zone-anchored expansion.
+ *
+ * A timed recurrence repeats at a wall clock in its master's zone, so these
+ * tests pass that zone explicitly and compare explicit UTC instants. Nothing
+ * here reads the runtime's local zone, so the results are the same wherever the
+ * suite runs — unlike the `localIso` cases above, which are deliberately
+ * relative and now double as the M0 (timezone = null) regression suite.
+ *
+ * The DST expectations come from measured PostgreSQL behaviour:
+ * supabase/tests/0009_timed_recurrence_freebusy_preflight.sql section B for
+ * America/New_York, and the Phase 5b-4 probe for Europe/Dublin. The rule is
+ * "the LATER of the two candidate instants" — see utils/timezone.ts.
+ */
+describe('expandRule — zone-anchored (5b-4)', () => {
+  const NY = 'America/New_York';
+  const DUB = 'Europe/Dublin';
+
+  it('B1 keeps the wall clock across the New York spring-forward gap', () => {
+    // DTSTART 2026-03-06 09:30 New York (EST) = 14:30Z.
+    const occ = expandRule(
+      'FREQ=DAILY',
+      '2026-03-06T14:30:00.000Z',
+      '2026-03-05T00:00:00.000Z',
+      '2026-03-12T00:00:00.000Z',
+      NY,
+    );
+    // 09:30 local every day; the UTC instant moves an hour earlier once EDT starts.
+    expect(occ).toEqual([
+      '2026-03-06T14:30:00.000Z',
+      '2026-03-07T14:30:00.000Z',
+      '2026-03-08T13:30:00.000Z',
+      '2026-03-09T13:30:00.000Z',
+      '2026-03-10T13:30:00.000Z',
+      '2026-03-11T13:30:00.000Z',
+    ]);
+  });
+
+  it('B2 keeps the wall clock across the New York fall-back fold', () => {
+    // DTSTART 2026-10-30 09:30 New York (EDT) = 13:30Z.
+    const occ = expandRule(
+      'FREQ=DAILY',
+      '2026-10-30T13:30:00.000Z',
+      '2026-10-29T00:00:00.000Z',
+      '2026-11-04T00:00:00.000Z',
+      NY,
+    );
+    expect(occ).toEqual([
+      '2026-10-30T13:30:00.000Z',
+      '2026-10-31T13:30:00.000Z',
+      '2026-11-01T14:30:00.000Z',
+      '2026-11-02T14:30:00.000Z',
+      '2026-11-03T14:30:00.000Z',
+    ]);
+  });
+
+  it('B3 resolves an occurrence that lands inside the fold to the LATER instant', () => {
+    // DTSTART 2026-10-30 01:30 New York (EDT) = 05:30Z. On 11-01 the 01:30 slot
+    // happens twice: 05:30Z (EDT) and 06:30Z (EST). PostgreSQL returns 06:30Z
+    // (preflight B.4), so this must too.
+    const occ = expandRule(
+      'FREQ=DAILY',
+      '2026-10-30T05:30:00.000Z',
+      '2026-10-29T00:00:00.000Z',
+      '2026-11-03T00:00:00.000Z',
+      NY,
+    );
+    expect(occ).toEqual([
+      '2026-10-30T05:30:00.000Z',
+      '2026-10-31T05:30:00.000Z',
+      '2026-11-01T06:30:00.000Z',
+      '2026-11-02T06:30:00.000Z',
+    ]);
+  });
+
+  it('B4 keeps a DTSTART stored on the EARLY side of a fold exactly where it is', () => {
+    // This is what the DTSTART exact-anchor exists for. 2026-11-01T05:30:00Z is
+    // 01:30 EDT — the earlier of the two 01:30s. Re-deriving it from the wall
+    // clock would return the LATER instant (06:30Z) and silently move the first
+    // occurrence of the series by an hour, so the stored instant is emitted
+    // verbatim instead (0009: `if v_cl = v_dtl then v_start := p_start_at`).
+    const occ = expandRule(
+      'FREQ=DAILY',
+      '2026-11-01T05:30:00.000Z',
+      '2026-11-01T00:00:00.000Z',
+      '2026-11-04T00:00:00.000Z',
+      NY,
+    );
+    expect(occ[0]).toBe('2026-11-01T05:30:00.000Z');
+    // Every LATER occurrence is derived from the wall clock as usual.
+    expect(occ).toEqual([
+      '2026-11-01T05:30:00.000Z',
+      '2026-11-02T06:30:00.000Z',
+      '2026-11-03T06:30:00.000Z',
+    ]);
+  });
+
+  it('B5 keeps a DTSTART stored on the LATE side of a fold exactly where it is', () => {
+    // 2026-11-01T06:30:00Z is 01:30 EST, the later 01:30. Here the anchor and a
+    // fresh resolution agree; the assertion guards the anchor against being
+    // implemented in a way that would break this direction.
+    const occ = expandRule(
+      'FREQ=DAILY',
+      '2026-11-01T06:30:00.000Z',
+      '2026-11-01T00:00:00.000Z',
+      '2026-11-04T00:00:00.000Z',
+      NY,
+    );
+    expect(occ).toEqual([
+      '2026-11-01T06:30:00.000Z',
+      '2026-11-02T06:30:00.000Z',
+      '2026-11-03T06:30:00.000Z',
+    ]);
+  });
+
+  it('B6 resolves a Dublin WEEKLY series across its negative-DST fold', () => {
+    // DTSTART 2026-10-11 01:30 Dublin (IST, UTC+1) = 00:30Z, a Sunday.
+    // On 10-25 the 01:30 slot is ambiguous: 00:30Z (IST) or 01:30Z (GMT). The
+    // 5b-4 probe measured 01:30Z — the LATER one, NOT the standard-time offset.
+    const occ = expandRule(
+      'FREQ=WEEKLY;BYDAY=SU',
+      '2026-10-11T00:30:00.000Z',
+      '2026-10-10T00:00:00.000Z',
+      '2026-11-02T00:00:00.000Z',
+      DUB,
+    );
+    expect(occ).toEqual([
+      '2026-10-11T00:30:00.000Z',
+      '2026-10-18T00:30:00.000Z',
+      '2026-10-25T01:30:00.000Z',
+      '2026-11-01T01:30:00.000Z',
+    ]);
+  });
+
+  it('B7 resolves a Dublin DAILY series across its negative-DST gap', () => {
+    // DTSTART 2026-03-27 01:30 Dublin (GMT) = 01:30Z. On 03-29 local 01:30 does
+    // not exist; the probe measured 01:30Z, which renders as 02:30 IST — the
+    // gap moves FORWARD. Note the emitted list is not monotonic in UTC: the
+    // next day is 00:30Z. Callers sort; the expander reports in series order.
+    const occ = expandRule(
+      'FREQ=DAILY',
+      '2026-03-27T01:30:00.000Z',
+      '2026-03-26T00:00:00.000Z',
+      '2026-03-31T00:00:00.000Z',
+      DUB,
+    );
+    expect(occ).toEqual([
+      '2026-03-27T01:30:00.000Z',
+      '2026-03-28T01:30:00.000Z',
+      '2026-03-29T01:30:00.000Z',
+      '2026-03-30T00:30:00.000Z',
+    ]);
+  });
+
+  it('B8 takes the default BYDAY weekday from the ZONE, not from UTC or the host', () => {
+    // 2026-03-02T02:00:00Z is Monday in UTC but Sunday 21:00 in New York.
+    // A WEEKLY rule with no BYDAY must follow DTSTART's weekday IN ITS ZONE.
+    const ny = expandRule(
+      'FREQ=WEEKLY',
+      '2026-03-02T02:00:00.000Z',
+      '2026-03-01T00:00:00.000Z',
+      '2026-03-23T00:00:00.000Z',
+      NY,
+    );
+    expect(ny).toEqual([
+      '2026-03-02T02:00:00.000Z', // Sun 2026-03-01 21:00 EST
+      '2026-03-09T01:00:00.000Z', // Sun 2026-03-08 21:00 EDT
+      '2026-03-16T01:00:00.000Z', // Sun 2026-03-15 21:00 EDT
+    ]);
+
+    // Same instant, same rule, zone UTC: there DTSTART is a Monday, so the
+    // series lands on Mondays instead. The zone is what decides.
+    const utc = expandRule(
+      'FREQ=WEEKLY',
+      '2026-03-02T02:00:00.000Z',
+      '2026-03-01T00:00:00.000Z',
+      '2026-03-23T00:00:00.000Z',
+      'UTC',
+    );
+    expect(utc).toEqual([
+      '2026-03-02T02:00:00.000Z',
+      '2026-03-09T02:00:00.000Z',
+      '2026-03-16T02:00:00.000Z',
+    ]);
+  });
+
+  it('B9 leaves ordinary DST-free weeks alone (INTERVAL, BYDAY, UNTIL)', () => {
+    // June in New York: EDT throughout, so every occurrence is a plain -4.
+    expect(
+      expandRule(
+        'FREQ=DAILY;INTERVAL=3',
+        '2026-06-01T13:30:00.000Z', // 09:30 EDT
+        '2026-06-01T00:00:00.000Z',
+        '2026-06-11T00:00:00.000Z',
+        NY,
+      ),
+    ).toEqual([
+      '2026-06-01T13:30:00.000Z',
+      '2026-06-04T13:30:00.000Z',
+      '2026-06-07T13:30:00.000Z',
+      '2026-06-10T13:30:00.000Z',
+    ]);
+
+    expect(
+      expandRule(
+        'FREQ=WEEKLY;BYDAY=MO,WE;UNTIL=20260617T235959Z',
+        '2026-06-01T13:30:00.000Z', // Monday 09:30 EDT
+        '2026-06-01T00:00:00.000Z',
+        '2026-06-30T00:00:00.000Z',
+        NY,
+      ),
+    ).toEqual([
+      '2026-06-01T13:30:00.000Z',
+      '2026-06-03T13:30:00.000Z',
+      '2026-06-08T13:30:00.000Z',
+      '2026-06-10T13:30:00.000Z',
+      '2026-06-15T13:30:00.000Z',
+      '2026-06-17T13:30:00.000Z',
+    ]);
+  });
+
+  it('B10 defaults to the legacy local-time path when no zone is given (M0)', () => {
+    // The default is null, so an omitted argument must be identical to an
+    // explicit null. This is what keeps every pre-5b-4 caller — and every test
+    // above in this file — on exactly the behaviour it had.
+    const cases: ReadonlyArray<readonly [string, number, number, number]> = [
+      ['FREQ=DAILY', 2026, 3, 6],
+      ['FREQ=WEEKLY;BYDAY=MO,WE,FR', 2026, 3, 2],
+      ['FREQ=DAILY;INTERVAL=2;COUNT=4', 2026, 11, 1],
+    ];
+    for (const [rrule, y, m, d] of cases) {
+      const dtstart = new Date(y, m - 1, d, 9, 30, 0, 0).toISOString();
+      const from = new Date(y, m - 1, 1).toISOString();
+      const to = new Date(y, m - 1, 28).toISOString();
+      expect(expandRule(rrule, dtstart, from, to)).toEqual(
+        expandRule(rrule, dtstart, from, to, null),
+      );
+    }
+  });
+
+  it('B11 leaves FREQ=MONTHLY on the local-time path even when a zone is given', () => {
+    // 0009 does not expand MONTHLY, so there is no SQL semantics to match and
+    // 5b-4 deliberately changes nothing here. Passing a zone must be a no-op.
+    const dtstart = new Date(2026, 0, 31, 9, 30, 0, 0).toISOString();
+    const from = new Date(2026, 0, 1).toISOString();
+    const to = new Date(2026, 11, 31).toISOString();
+    expect(expandRule('FREQ=MONTHLY', dtstart, from, to, NY)).toEqual(
+      expandRule('FREQ=MONTHLY', dtstart, from, to),
+    );
+  });
+});
