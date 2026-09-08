@@ -224,14 +224,140 @@ export function expandRule(
     );
   };
 
+  /**
+   * The calendar date an instant falls on, in the SAME frame `instantOn` builds
+   * from. Used to turn the requested window into candidate indices; the inverse
+   * direction of `instantOn`.
+   */
+  const civilOf = (instantMs: number): Civil => {
+    if (timeZone === null) {
+      const d = new Date(instantMs);
+      return { year: d.getFullYear(), month: d.getMonth() + 1, day: d.getDate() };
+    }
+    const w = zonedWallClockOf(instantMs, timeZone);
+    return { year: w.year, month: w.month, day: w.day };
+  };
+
   const results: string[] = [];
-  let emitted = 0;
 
   const pastUntil = (d: Date): boolean => {
     if (untilInstant !== undefined) return d.getTime() > untilInstant;
     if (untilDate !== undefined) return localDateStr(d) > untilDate;
     return false;
   };
+
+  // BYDAY defaults to DTSTART's own weekday, read in the SAME zone the wall
+  // clock above came from -- browser-local for M0, the master's zone for M1. A
+  // hybrid (zone wall clock, browser weekday) would put occurrences on the
+  // wrong day whenever the two zones disagree about DTSTART's date.
+  const dtWeekdayIndex = civilWeekdayIndex(dtCivil);
+
+  // ==========================================================================
+  // DAILY and WEEKLY -- Phase 5b-5A.
+  //
+  // Candidates are indexed from DTSTART, but the index RANGE is derived from
+  // the requested window, exactly as migrations 0007/0009 derive theirs. The
+  // loop therefore costs O(window), never O(distance from DTSTART), and the
+  // series being infinite is no longer a reason to iterate at all. That is why
+  // this branch does NOT consult MAX_ITERATIONS: with a window-derived range
+  // there is no unbounded loop left for it to guard. (The constant stays for
+  // MONTHLY below, whose candidates are still walked from DTSTART.)
+  //
+  // BEFORE 5b-5A this branch walked from index 0 and stopped at
+  // MAX_ITERATIONS = 3660, so a FREQ=DAILY series silently vanished from any
+  // window more than ~10 years after DTSTART -- with or without COUNT.
+  //
+  // COUNT is an ORDINAL BOUND, not a running tally. The ordinal of a candidate
+  // is closed-form for both frequencies, so "is this the N-th occurrence of the
+  // series" is answered without generating the ones before it. The previous
+  // implementation counted by walking, which is what made COUNT > 3660 lossy.
+  //
+  // The index range is deliberately WIDER than needed (a day of margin at each
+  // end absorbs any zone offset); exactness comes from the per-candidate filter
+  // in `emit`, which is the same arrangement the SQL side uses.
+  // ==========================================================================
+  if (rule.freq === 'DAILY' || rule.freq === 'WEEKLY') {
+    const emit = (d: Date, ordinal: number): void => {
+      if (d.getTime() < dtstartMs) return; // nothing before DTSTART
+      if (pastUntil(d)) return;
+      // A negative ordinal means "week 0, before DTSTART's weekday", which the
+      // DTSTART test above has already rejected. Checked anyway so the two
+      // guards stay independent.
+      if (rule.count !== undefined && (ordinal < 0 || ordinal >= rule.count)) return;
+      const t = d.getTime();
+      if (t >= rangeStart && t < rangeEnd) results.push(d.toISOString());
+    };
+
+    const d0Day = civilDayNumber(dtCivil);
+    const fromDay = civilDayNumber(civilOf(rangeStart)) - 1;
+    const toDay = civilDayNumber(civilOf(rangeEnd)) + 1;
+
+    if (rule.freq === 'DAILY') {
+      // Candidate i is DTSTART + i * INTERVAL days, and its ordinal IS i.
+      const lo = Math.max(0, Math.floor((fromDay - d0Day) / rule.interval));
+      let hi = Math.floor((toDay - d0Day) / rule.interval);
+      if (rule.count !== undefined) hi = Math.min(hi, rule.count - 1);
+
+      for (let i = lo; i <= hi; i++) {
+        emit(instantOn(civil(dtCivil.year, dtCivil.month, dtCivil.day + i * rule.interval)), i);
+      }
+    } else {
+      // WEEKLY. Offsets are NORMALISED TO WEEKDAY ORDER (0 = Monday .. 6 =
+      // Sunday) before anything else: the SQL side sorts them
+      // (`array_agg(o.idx order by o.idx)`), and with COUNT the order decides
+      // WHICH occurrences exist, not merely the order they are reported in. An
+      // unsorted BYDAY would otherwise make the two implementations disagree on
+      // the occurrence SET.
+      const offsets = [...(rule.byDay ?? [WEEKDAYS[dtWeekdayIndex]!])]
+        .map(weekdayIndex)
+        .sort((a, b) => a - b);
+      const k = offsets.length;
+      // Week 0 is PARTIAL: only offsets at or after DTSTART's own weekday
+      // survive. Because `offsets` is sorted, the ones before it are exactly
+      // the first (k - weekZeroCount) entries, so the rank of entry j within
+      // week 0 is j - (k - weekZeroCount).
+      const weekZeroCount = offsets.filter((o) => o >= dtWeekdayIndex).length;
+
+      const w0Day = d0Day - dtWeekdayIndex; // Monday of DTSTART's week
+      const step = 7 * rule.interval;
+      const lo = Math.max(0, Math.floor((fromDay - 7 - w0Day) / step));
+      let hi = Math.floor((toDay - w0Day) / step) + 1;
+      if (rule.count !== undefined) {
+        hi = Math.min(
+          hi,
+          rule.count <= weekZeroCount
+            ? 0
+            : 1 + Math.floor((rule.count - 1 - weekZeroCount) / k),
+        );
+      }
+
+      const weekStart = civil(dtCivil.year, dtCivil.month, dtCivil.day - dtWeekdayIndex);
+      for (let i = lo; i <= hi; i++) {
+        for (let j = 0; j < k; j++) {
+          const ordinal =
+            i === 0 ? j - (k - weekZeroCount) : weekZeroCount + (i - 1) * k + j;
+          emit(
+            instantOn(
+              civil(weekStart.year, weekStart.month, weekStart.day + i * step + offsets[j]!),
+            ),
+            ordinal,
+          );
+        }
+      }
+    }
+
+    return results;
+  }
+
+  // ==========================================================================
+  // MONTHLY -- unchanged by 5b-5A, deliberately.
+  //
+  // Its candidates are still walked from DTSTART because a skipped month breaks
+  // the arithmetic progression, so there is no closed-form ordinal to use. That
+  // walk is what MAX_ITERATIONS still guards; at one iteration per month it
+  // spans ~305 years, so it does not clip any realistic series.
+  // ==========================================================================
+  let emitted = 0;
 
   const push = (d: Date): boolean => {
     if (pastUntil(d)) return false;
@@ -244,77 +370,42 @@ export function expandRule(
     return true;
   };
 
-  // BYDAY defaults to DTSTART's own weekday, read in the SAME zone the wall
-  // clock above came from -- browser-local for M0, the master's zone for M1. A
-  // hybrid (zone wall clock, browser weekday) would put occurrences on the
-  // wrong day whenever the two zones disagree about DTSTART's date.
-  const dtWeekdayIndex = civilWeekdayIndex(dtCivil);
-  const byDayIndices =
-    rule.freq === 'WEEKLY'
-      ? (rule.byDay ?? [WEEKDAYS[dtWeekdayIndex]!]).map(weekdayIndex)
-      : [];
-
   for (let i = 0; i < MAX_ITERATIONS; i++) {
-    let keepGoing = true;
+    // MONTHLY: same day-of-month as dtstart, stepping `interval` months.
+    //
+    // NOT zone-aware, on purpose (see the function's doc comment): every field
+    // below is read straight off `dtstart` in the runtime's local zone, never
+    // from the zoned wall clock, so passing a `timeZone` cannot turn this into
+    // a half-converted hybrid. 0009 leaves MONTHLY unexpanded, so there is
+    // nothing here to agree with.
+    //
+    // RFC 5545: a month that has no such day-of-month (e.g. Feb 31, or Feb 29
+    // in a common year) is SKIPPED — it yields no occurrence and does not
+    // count toward COUNT. The JS Date constructor instead rolls the date over
+    // into the next month (Jan 31 + 1 month -> Mar 3), so detect that by
+    // checking whether the day-of-month survived construction.
+    const monthIndex = dtstart.getMonth() + i * rule.interval;
+    const d = new Date(
+      dtstart.getFullYear(),
+      monthIndex,
+      dtstart.getDate(),
+      dtstart.getHours(), dtstart.getMinutes(), dtstart.getSeconds(), dtstart.getMilliseconds(),
+    );
 
-    if (rule.freq === 'DAILY') {
-      const d = instantOn(civil(dtCivil.year, dtCivil.month, dtCivil.day + i * rule.interval));
-      if (d.getTime() >= rangeEnd && rule.count === undefined && !hasUntil) break;
-      keepGoing = push(d);
-    } else if (rule.freq === 'WEEKLY') {
-      // Move to the Monday of dtstart's week, then step `interval` weeks.
-      const weekStart = civil(dtCivil.year, dtCivil.month, dtCivil.day - dtWeekdayIndex);
-      for (const dayIdx of byDayIndices) {
-        const d = instantOn(
-          civil(weekStart.year, weekStart.month, weekStart.day + i * rule.interval * 7 + dayIdx),
-        );
-        if (d.getTime() < dtstartMs) continue; // skip days before series start
-        keepGoing = push(d);
-        if (!keepGoing) break;
-      }
-      const probe = instantOn(
-        civil(weekStart.year, weekStart.month, weekStart.day + i * rule.interval * 7),
-      );
-      if (probe.getTime() >= rangeEnd && rule.count === undefined && !hasUntil) break;
-    } else {
-      // MONTHLY: same day-of-month as dtstart, stepping `interval` months.
-      //
-      // NOT zone-aware, on purpose (see the function's doc comment): every field
-      // below is read straight off `dtstart` in the runtime's local zone, never
-      // from the zoned wall clock, so passing a `timeZone` cannot turn this into
-      // a half-converted hybrid. 0009 leaves MONTHLY unexpanded, so there is
-      // nothing here to agree with.
-      //
-      // RFC 5545: a month that has no such day-of-month (e.g. Feb 31, or Feb 29
-      // in a common year) is SKIPPED — it yields no occurrence and does not
-      // count toward COUNT. The JS Date constructor instead rolls the date over
-      // into the next month (Jan 31 + 1 month -> Mar 3), so detect that by
-      // checking whether the day-of-month survived construction.
-      const monthIndex = dtstart.getMonth() + i * rule.interval;
-      const d = new Date(
-        dtstart.getFullYear(),
-        monthIndex,
-        dtstart.getDate(),
-        dtstart.getHours(), dtstart.getMinutes(), dtstart.getSeconds(), dtstart.getMilliseconds(),
-      );
-
-      if (d.getDate() !== dtstart.getDate()) {
-        // Skipped month. `d` rolled forward, so it is strictly LATER than the
-        // (nonexistent) intended date; if even that is past UNTIL, every later
-        // month is too and the series is over.
-        if (pastUntil(d)) break;
-        // Probe the month itself, not the rolled-over date, so a skipped month
-        // can never end the loop before a later valid month is reached.
-        const monthStart = new Date(dtstart.getFullYear(), monthIndex, 1).getTime();
-        if (monthStart >= rangeEnd && rule.count === undefined && !hasUntil) break;
-        continue;
-      }
-
-      if (d.getTime() >= rangeEnd && rule.count === undefined && !hasUntil) break;
-      keepGoing = push(d);
+    if (d.getDate() !== dtstart.getDate()) {
+      // Skipped month. `d` rolled forward, so it is strictly LATER than the
+      // (nonexistent) intended date; if even that is past UNTIL, every later
+      // month is too and the series is over.
+      if (pastUntil(d)) break;
+      // Probe the month itself, not the rolled-over date, so a skipped month
+      // can never end the loop before a later valid month is reached.
+      const monthStart = new Date(dtstart.getFullYear(), monthIndex, 1).getTime();
+      if (monthStart >= rangeEnd && rule.count === undefined && !hasUntil) break;
+      continue;
     }
 
-    if (!keepGoing) break;
+    if (d.getTime() >= rangeEnd && rule.count === undefined && !hasUntil) break;
+    if (!push(d)) break;
   }
 
   return results;
@@ -379,4 +470,13 @@ function civil(year: number, month: number, day: number): Civil {
 function civilWeekdayIndex(c: Civil): number {
   const jsDay = new Date(Date.UTC(c.year, c.month - 1, c.day)).getUTCDay(); // 0=Sun..6=Sat
   return (jsDay + 6) % 7;
+}
+
+/**
+ * A civil date as a whole number of days, so candidate indices can be derived
+ * from the window by plain arithmetic. Only DIFFERENCES of these numbers are
+ * ever used, so the epoch they are counted from does not matter.
+ */
+function civilDayNumber(c: Civil): number {
+  return Date.UTC(c.year, c.month - 1, c.day) / 86_400_000;
 }

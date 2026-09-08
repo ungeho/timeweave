@@ -553,3 +553,203 @@ describe('expandRule — zone-anchored (5b-4)', () => {
     );
   });
 });
+
+/**
+ * Phase 5b-5A — COUNT correctness and window-derived expansion.
+ *
+ * Before 5b-5A, DAILY and WEEKLY walked candidates from DTSTART and stopped at
+ * MAX_ITERATIONS, so a DAILY series vanished from any window more than ~3660
+ * days after DTSTART (with OR without COUNT), and COUNT was a running tally
+ * that could not reach past that bound either. Both are now closed-form: the
+ * candidate index range comes from the window, and COUNT is an ordinal bound.
+ *
+ * The ordinal definitions these tests pin are the contract migration 0010 must
+ * reproduce exactly:
+ *   DAILY   ordinal(i) = i
+ *   WEEKLY  ordinal(0, j) = j - (k - weekZeroCount)      (week 0 is partial)
+ *           ordinal(i, j) = weekZeroCount + (i-1)*k + j  (i >= 1)
+ * with the BYDAY offsets NORMALISED to weekday order first.
+ */
+describe('expandRule — COUNT and window-derived expansion (5b-5A)', () => {
+  const utc = (y: number, m: number, d: number, h = 9) =>
+    new Date(Date.UTC(y, m - 1, d, h)).toISOString();
+  const localIso = (y: number, m: number, d: number, h = 9) =>
+    new Date(y, m - 1, d, h, 0, 0, 0).toISOString();
+  /** Just the calendar dates, for readable weekly assertions. */
+  const days = (out: string[]) => out.map((s) => s.slice(0, 10));
+
+  // -- A1: the bug that had nothing to do with COUNT ------------------------
+  it('A1 expands an infinite FREQ=DAILY series more than 10 years after DTSTART', () => {
+    const dtstart = localIso(2020, 1, 1);
+    for (const year of [2020, 2025, 2029, 2030, 2031, 2035]) {
+      const from = localIso(year, 6, 1, 0);
+      const to = localIso(year, 6, 8, 0);
+      expect(expandRule('FREQ=DAILY', dtstart, from, to)).toHaveLength(7);
+    }
+  });
+
+  it('A2 honours COUNT past MAX_ITERATIONS, and stops where the series really ends', () => {
+    const dtstart = localIso(2020, 1, 1);
+    const week = (year: number) =>
+      expandRule('FREQ=DAILY;COUNT=5000', dtstart, localIso(year, 6, 1, 0), localIso(year, 6, 8, 0));
+    // occurrence 3660 falls in 2030; the old walk stopped there and returned []
+    expect(week(2029)).toHaveLength(7);
+    expect(week(2030)).toHaveLength(7);
+    expect(week(2031)).toHaveLength(7);
+    // 5000 daily occurrences from 2020-01-01 run out during 2033
+    expect(week(2035)).toHaveLength(0);
+  });
+
+  it('A3 stops a DAILY series exactly at COUNT', () => {
+    const occ = expandRule(
+      'FREQ=DAILY;COUNT=10', utc(2026, 6, 1), utc(2026, 6, 1, 0), utc(2026, 7, 1, 0), 'UTC',
+    );
+    expect(days(occ)).toEqual([
+      '2026-06-01', '2026-06-02', '2026-06-03', '2026-06-04', '2026-06-05',
+      '2026-06-06', '2026-06-07', '2026-06-08', '2026-06-09', '2026-06-10',
+    ]);
+  });
+
+  it('A4 counts occurrences, not days, when INTERVAL > 1', () => {
+    const occ = expandRule(
+      'FREQ=DAILY;INTERVAL=3;COUNT=5', utc(2026, 6, 1), utc(2026, 6, 1, 0), utc(2026, 7, 1, 0), 'UTC',
+    );
+    expect(days(occ)).toEqual(['2026-06-01', '2026-06-04', '2026-06-07', '2026-06-10', '2026-06-13']);
+  });
+
+  // -- A5/A6: BYDAY order must not change WHICH occurrences exist -----------
+  it('A5 counts a WEEKLY BYDAY series in weekday order', () => {
+    // 2026-06-01 is a Monday. MO,FR -> Jun 1, Jun 5, Jun 8.
+    const occ = expandRule(
+      'FREQ=WEEKLY;BYDAY=MO,FR;COUNT=3', utc(2026, 6, 1), utc(2026, 5, 1, 0), utc(2026, 8, 1, 0), 'UTC',
+    );
+    expect(days(occ)).toEqual(['2026-06-01', '2026-06-05', '2026-06-08']);
+  });
+
+  it('A6 gives BYDAY=FR,MO the identical ordered sequence as BYDAY=MO,FR', () => {
+    const sorted = expandRule(
+      'FREQ=WEEKLY;BYDAY=MO,FR;COUNT=3', utc(2026, 6, 1), utc(2026, 5, 1, 0), utc(2026, 8, 1, 0), 'UTC',
+    );
+    const unsorted = expandRule(
+      'FREQ=WEEKLY;BYDAY=FR,MO;COUNT=3', utc(2026, 6, 1), utc(2026, 5, 1, 0), utc(2026, 8, 1, 0), 'UTC',
+    );
+    // Before 5b-5A this returned Jun 5, Jun 1, Jun 12 -- a different SET, and
+    // out of chronological order. The SQL side has always sorted, so this is
+    // the assertion that keeps the two implementations on one sequence.
+    expect(unsorted).toEqual(sorted);
+  });
+
+  // -- A7/A8: the partial week 0 -------------------------------------------
+  it('A7 counts the partial first week when DTSTART is inside BYDAY', () => {
+    // DTSTART Wednesday 2026-06-03; MO,WE,FR. Week 0 contributes WE and FR only.
+    const occ = expandRule(
+      'FREQ=WEEKLY;BYDAY=MO,WE,FR;COUNT=7', utc(2026, 6, 3), utc(2026, 5, 1, 0), utc(2026, 8, 1, 0), 'UTC',
+    );
+    expect(days(occ)).toEqual([
+      '2026-06-03', '2026-06-05',                             // week 0: ordinals 0,1
+      '2026-06-08', '2026-06-10', '2026-06-12',               // week 1: 2,3,4
+      '2026-06-15', '2026-06-17',                             // week 2: 5,6
+    ]);
+  });
+
+  it('A8 handles a DTSTART whose weekday is NOT in BYDAY', () => {
+    // DTSTART Wednesday 2026-06-03; MO,FR. TimeWeave does not emit DTSTART
+    // itself when it does not match BYDAY (same on both sides), so the first
+    // occurrence is the Friday and week 0 contributes exactly one.
+    const occ = expandRule(
+      'FREQ=WEEKLY;BYDAY=MO,FR;COUNT=4', utc(2026, 6, 3), utc(2026, 5, 1, 0), utc(2026, 8, 1, 0), 'UTC',
+    );
+    expect(days(occ)).toEqual(['2026-06-05', '2026-06-08', '2026-06-12', '2026-06-15']);
+  });
+
+  it('A9 combines INTERVAL > 1, BYDAY and COUNT', () => {
+    // DTSTART Tuesday 2026-06-02, every 2nd week, TU+TH, 5 occurrences.
+    const occ = expandRule(
+      'FREQ=WEEKLY;INTERVAL=2;BYDAY=TU,TH;COUNT=5',
+      utc(2026, 6, 2), utc(2026, 5, 1, 0), utc(2026, 8, 1, 0), 'UTC',
+    );
+    expect(days(occ)).toEqual([
+      '2026-06-02', '2026-06-04',   // week 0
+      '2026-06-16', '2026-06-18',   // week 2
+      '2026-06-30',                 // week 4, ordinal 4
+    ]);
+  });
+
+  it('A10 returns nothing for a window after the COUNT series has ended', () => {
+    expect(
+      expandRule('FREQ=DAILY;COUNT=10', utc(2026, 6, 1), utc(2027, 1, 1, 0), utc(2027, 2, 1, 0), 'UTC'),
+    ).toEqual([]);
+    expect(
+      expandRule('FREQ=WEEKLY;BYDAY=MO,FR;COUNT=3', utc(2026, 6, 1), utc(2027, 1, 1, 0), utc(2027, 2, 1, 0), 'UTC'),
+    ).toEqual([]);
+  });
+
+  it('A11 returns nothing for a window entirely before DTSTART', () => {
+    expect(
+      expandRule('FREQ=DAILY;COUNT=10', utc(2026, 6, 1), utc(2026, 1, 1, 0), utc(2026, 2, 1, 0), 'UTC'),
+    ).toEqual([]);
+  });
+
+  // -- A12: COUNT and the 5b-4 DST semantics together ------------------------
+  it('A12 keeps the LATER-instant fold resolution while COUNT bounds the series', () => {
+    // DTSTART 2026-10-30 01:30 New York (EDT) = 05:30Z, five occurrences.
+    const occ = expandRule(
+      'FREQ=DAILY;COUNT=5',
+      '2026-10-30T05:30:00.000Z',
+      '2026-10-01T00:00:00.000Z',
+      '2026-12-01T00:00:00.000Z',
+      'America/New_York',
+    );
+    expect(occ).toEqual([
+      '2026-10-30T05:30:00.000Z', // DTSTART, emitted verbatim (exact anchor)
+      '2026-10-31T05:30:00.000Z',
+      '2026-11-01T06:30:00.000Z', // fold -> the LATER 01:30
+      '2026-11-02T06:30:00.000Z',
+      '2026-11-03T06:30:00.000Z',
+    ]);
+  });
+
+  // -- A13: MONTHLY is untouched -------------------------------------------
+  it('A13 leaves MONTHLY COUNT semantics exactly as they were', () => {
+    // Jan 31 series: months without a 31st are SKIPPED and do not consume COUNT.
+    const dtstart = localIso(2026, 1, 31);
+    const occ = expandRule('FREQ=MONTHLY;COUNT=5', dtstart, localIso(2026, 1, 1, 0), localIso(2027, 1, 1, 0));
+    expect(occ.map((s) => new Date(s).getMonth() + 1)).toEqual([1, 3, 5, 7, 8]);
+    // and passing a zone is still a no-op for MONTHLY
+    expect(
+      expandRule('FREQ=MONTHLY;COUNT=5', dtstart, localIso(2026, 1, 1, 0), localIso(2027, 1, 1, 0), 'America/New_York'),
+    ).toEqual(occ);
+  });
+
+  // -- A14: M0 (no zone) behaves the same way -------------------------------
+  it('A14 applies the same ordinal rules on the legacy local-time path (M0)', () => {
+    const from = localIso(2026, 5, 1, 0);
+    const to = localIso(2026, 8, 1, 0);
+    for (const r of [
+      'FREQ=DAILY;COUNT=10',
+      'FREQ=DAILY;INTERVAL=3;COUNT=5',
+      'FREQ=WEEKLY;BYDAY=MO,WE,FR;COUNT=7',
+      'FREQ=WEEKLY;INTERVAL=2;BYDAY=TU,TH;COUNT=5',
+    ]) {
+      const dtstart = localIso(2026, 6, 3);
+      // omitted argument === explicit null, and COUNT is respected either way
+      expect(expandRule(r, dtstart, from, to)).toEqual(expandRule(r, dtstart, from, to, null));
+      const n = Number(/COUNT=(\d+)/.exec(r)![1]);
+      expect(expandRule(r, dtstart, from, to).length).toBeLessThanOrEqual(n);
+    }
+    // BYDAY order independence holds on the M0 path too
+    const dtstart = localIso(2026, 6, 1);
+    expect(expandRule('FREQ=WEEKLY;BYDAY=FR,MO;COUNT=3', dtstart, from, to)).toEqual(
+      expandRule('FREQ=WEEKLY;BYDAY=MO,FR;COUNT=3', dtstart, from, to),
+    );
+  });
+
+  it('A16 keeps UNTIL working alongside the new index range', () => {
+    // UNTIL is inclusive on the occurrence START, and is still evaluated per
+    // candidate rather than by walking.
+    const occ = expandRule(
+      'FREQ=DAILY;UNTIL=20260605T235959Z', utc(2026, 6, 1), utc(2026, 5, 1, 0), utc(2026, 8, 1, 0), 'UTC',
+    );
+    expect(days(occ)).toEqual(['2026-06-01', '2026-06-02', '2026-06-03', '2026-06-04', '2026-06-05']);
+  });
+});

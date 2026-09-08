@@ -465,3 +465,114 @@ describe('expandEvents — zone-anchored masters (5b-4)', () => {
     ]);
   });
 });
+
+/**
+ * Phase 5b-5A — COUNT masters still detach their exceptions correctly.
+ *
+ * COUNT changed from a running tally to an ordinal bound, and the candidate
+ * index range is now derived from the window. Neither may disturb the slot key
+ * an exception is pinned to: `occurrenceKey` must still be the generated
+ * instant, byte for byte.
+ */
+describe('expandEvents — COUNT masters and exception slots (5b-5A)', () => {
+  const NY = 'America/New_York';
+  const win = { start: '2026-10-01T00:00:00.000Z', end: '2026-12-01T00:00:00.000Z' };
+
+  /** DAILY 01:30 New York, five occurrences, straight through the autumn fold. */
+  const countMaster = (over: Partial<EventRow> = {}): EventRow =>
+    base({
+      id: 'm',
+      startAt: '2026-10-30T05:30:00.000Z',
+      endAt: '2026-10-30T06:30:00.000Z',
+      rrule: 'FREQ=DAILY;COUNT=5',
+      timezone: NY,
+      ...over,
+    });
+
+  it('A15a expands a COUNT master and keeps the fold on the LATER instant', () => {
+    const occ = expandEvents([countMaster()], win.start, win.end);
+    expect(occ.map((o) => o.start)).toEqual([
+      '2026-10-30T05:30:00.000Z',
+      '2026-10-31T05:30:00.000Z',
+      '2026-11-01T06:30:00.000Z',
+      '2026-11-02T06:30:00.000Z',
+      '2026-11-03T06:30:00.000Z',
+    ]);
+    expect(occ[2]!.occurrenceKey).toBe('2026-11-01T06:30:00.000Z');
+  });
+
+  it('A15b detaches an override exception on a COUNT master', () => {
+    const ex = base({
+      id: 'x',
+      recurrenceId: 'm',
+      recurrenceSlotStart: '2026-11-01T06:30:00.000Z',
+      startAt: '2026-11-01T15:00:00.000Z',
+      endAt: '2026-11-01T16:00:00.000Z',
+      isCancelled: false,
+    });
+    const occ = expandEvents([countMaster(), ex], win.start, win.end);
+    expect(occ.map((o) => o.start)).toEqual([
+      '2026-10-30T05:30:00.000Z',
+      '2026-10-31T05:30:00.000Z',
+      '2026-11-01T15:00:00.000Z', // the override replaces the 06:30Z slot
+      '2026-11-02T06:30:00.000Z',
+      '2026-11-03T06:30:00.000Z',
+    ]);
+    expect(occ.filter((o) => o.isException)).toHaveLength(1);
+  });
+
+  it('A15c lets a cancellation remove one occurrence of a COUNT master', () => {
+    const cancel = base({
+      id: 'x',
+      recurrenceId: 'm',
+      recurrenceSlotStart: '2026-11-01T06:30:00.000Z',
+      startAt: '2026-11-01T06:30:00.000Z',
+      endAt: '2026-11-01T07:30:00.000Z',
+      isCancelled: true,
+    });
+    const occ = expandEvents([countMaster(), cancel], win.start, win.end);
+    expect(occ.map((o) => o.start)).toEqual([
+      '2026-10-30T05:30:00.000Z',
+      '2026-10-31T05:30:00.000Z',
+      '2026-11-02T06:30:00.000Z',
+      '2026-11-03T06:30:00.000Z',
+    ]);
+    // The cancelled occurrence is gone and nothing was added in its place.
+    expect(occ.some((o) => o.isException)).toBe(false);
+  });
+
+  it('A15d ignores a slot that points past the end of the COUNT series', () => {
+    // COUNT=5 ends on 2026-11-03; a slot naming 11-04 detaches nothing, because
+    // that occurrence does not exist. The exception's own snapshot still shows.
+    const ex = base({
+      id: 'x',
+      recurrenceId: 'm',
+      recurrenceSlotStart: '2026-11-04T06:30:00.000Z',
+      startAt: '2026-11-04T15:00:00.000Z',
+      endAt: '2026-11-04T16:00:00.000Z',
+      isCancelled: false,
+    });
+    const occ = expandEvents([countMaster(), ex], win.start, win.end);
+    expect(occ.map((o) => o.start)).toEqual([
+      '2026-10-30T05:30:00.000Z',
+      '2026-10-31T05:30:00.000Z',
+      '2026-11-01T06:30:00.000Z',
+      '2026-11-02T06:30:00.000Z',
+      '2026-11-03T06:30:00.000Z',
+      '2026-11-04T15:00:00.000Z',
+    ]);
+  });
+
+  it('A15e expands a COUNT master far past MAX_ITERATIONS through expandEvents', () => {
+    const far = base({
+      id: 'f',
+      startAt: '2020-01-01T09:00:00.000Z',
+      endAt: '2020-01-01T10:00:00.000Z',
+      rrule: 'FREQ=DAILY;COUNT=5000',
+      timezone: 'UTC',
+    });
+    const occ = expandEvents([far], '2031-06-01T00:00:00.000Z', '2031-06-08T00:00:00.000Z');
+    expect(occ).toHaveLength(7); // was 0 before 5b-5A
+    expect(occ[0]!.start).toBe('2031-06-01T09:00:00.000Z');
+  });
+});
