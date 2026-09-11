@@ -9,6 +9,7 @@ import { ShareDialog } from '../share/ShareDialog';
 import { CalendarToolbar } from './CalendarToolbar';
 import { MonthView } from './MonthView';
 import { TimeGridView } from './TimeGridView';
+import { isAwaitingRows } from './loadState';
 import { monthGridRange } from './monthGrid';
 import { buildDayCell, buildWeekDays, dayRange, weekRange } from './weekGrid';
 import {
@@ -18,7 +19,15 @@ import {
   type SaveResult,
 } from '../event/EventDialog';
 
-/** Top-level calendar screen: toolbar + month/week/day view + add/edit dialog. */
+/**
+ * Top-level calendar screen: toolbar + month/week/day view + add/edit dialog.
+ *
+ * The grid is withheld until the first rows arrive (`isAwaitingRows`): an empty
+ * month would otherwise be read as "no events" while the fetch is still running.
+ * A reload triggered by a save keeps the rows it already has, so the calendar
+ * stays on screen and only a genuine first load shows the placeholder. A failed
+ * load is reported by the error banner, which is independent of this.
+ */
 export function CalendarPage() {
   const view = useCalendarView('month');
   const events = useEvents();
@@ -102,7 +111,10 @@ export function CalendarPage() {
 
       {events.error && <p className="banner error">読み込みエラー: {events.error}</p>}
 
-      {view.mode === 'month' ? (
+      {isAwaitingRows({ loading: events.loading, rowCount: events.rows.length }) ? (
+        // Nothing has arrived yet: an empty grid here would read as "no events".
+        <p className="app-loading">読み込み中…</p>
+      ) : view.mode === 'month' ? (
         <MonthView
           anchor={view.anchor}
           timeZone={timeZone}
