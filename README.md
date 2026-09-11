@@ -71,6 +71,10 @@ Phase 1 は `LocalStorageEventRepository`、Phase 2 で `SupabaseEventRepository
 変換は必ず `utils/datetime.ts` 経由（文字列操作禁止）。将来のタイムゾーン演算も
 このファイル内部だけで対応。
 
+**テーマ**: 配色トークンは `styles/theme.css`（`data-theme` 属性で切替）、初期テーマの判定規則は
+`utils/theme.ts` の純粋関数、`data-theme` の適用と `localStorage` への保存は `App.tsx` が持つ。
+コンポーネントは色を直接書かない。
+
 ## RRULE 対応サブセット
 
 繰り返しは基本予定 1 件 + RRULE で保持し、表示期間だけ展開する（事前大量生成しない）。
@@ -157,7 +161,27 @@ Phase 1 は `LocalStorageEventRepository`、Phase 2 で `SupabaseEventRepository
   証明できず `complete=false` に倒れていた）。
 - Phase 5b で残っているのは **SQL 側の `FREQ=MONTHLY` 展開**（未着手）。
   現状は `complete=false` に倒している。
-- Phase 6: ドラッグ&ドロップ、レスポンシブ改善、ダークモード仕上げ
+- **Phase 6-1（完了・本番確認済み）**: 初回ロード中に空のカレンダーを描画しない。
+  空のグリッドは「予定がない」という主張なので、最初の行が届くまでは代わりに「読み込み中…」を
+  出す。判定は `features/calendar/loadState.ts` の純粋関数 `isAwaitingRows()`＝`loading` かつ
+  手持ちの行が 0 件。`loading` 単独ではないのは `useEvents` が保存・削除のたびに再取得するため
+  で、行が手元にある限りグリッドは消さず再取得は画面に出さない。取得失敗は従来どおり別扱いで、
+  エラーバナーが担当する。空のカレンダー自体には注記を出さない（それは正常な画面であり、
+  新規作成の導線でもある）。
+- **Phase 6-2（完了・本番確認済み）**: ダークモードの仕上げ。現在の契約は次のとおり。
+  - `color-scheme` を両テーマに宣言し、ブラウザ自身が描く UI（`date` / `datetime-local` の
+    ピッカー、`select`、チェックボックス、スクロールバー）をテーマへ追従させる。
+  - テーマ依存色は `styles/theme.css` のトークンに集約する。コンポーネントと `global.css` は
+    色を直接持たない（唯一の例外はモーダルの半透明の黒で、両テーマで意図どおり機能する）。
+  - danger / warning 系を含め、テーマ依存のテキスト配色はライト・ダークとも WCAG AA の
+    通常テキスト基準（4.5:1）を満たす。
+  - 初期テーマの優先順位は **保存値 > OS 設定 > light**。判定は `utils/theme.ts` の純粋関数
+    `resolveInitialTheme()`。読めない保存値は「保存なし」として扱い OS 設定へフォールバックする。
+  - 手動で選んだテーマは `localStorage['timeweave.theme']` に保存され、以後 OS 設定より優先される。
+  - OS テーマ変更へのリアルタイム追従はしない（下記「既知の制約」）。
+- Phase 6 は進行中。残件はドラッグ&ドロップ、レスポンシブ改善、キーボード操作、favicon / OGP、
+  および下記「既知の制約」に挙げた任意 TZ 選択 UI・月ビュー帯レイアウトの調整・作成直後の
+  月移動導線。
 
 ## TODO / 既知の制約
 
@@ -187,6 +211,21 @@ Phase 1 は `LocalStorageEventRepository`、Phase 2 で `SupabaseEventRepository
   後からゾーンを設定できない**: 例外スナップショットが陳腐化するため `setSeriesTimezone` が
   `SeriesEditBlockedError` で拒否する（`services/recurrenceOps.ts`）。該当する系列は
   `complete=false` のままになる。
+- **テーマは OS 設定の変更にその場では追従しない**: `prefers-color-scheme` を読むのは初期値を
+  決めるときだけ（`utils/theme.ts`）。ページを開いたまま OS を切り替えても変わらず、リロードで
+  反映される。`matchMedia` の変更イベントは購読していない。テーマは `'light' | 'dark'` の 2 値で、
+  `'system'` という状態は持たない。
+- **共有ページ（`/s/:token`）にはテーマ切替 UI がない**: トグルはヘッダにあり、共有ルートは
+  ヘッダごと描画されないため（`App.tsx`）。ただし `data-theme` の適用自体は共有ルートでも走るので、
+  閲覧者には保存テーマがあればそれ、無ければ OS 設定に従った配色で表示される。現時点では
+  意図した仕様。
+- **ダークモードの目視確認の範囲**: カレンダー、`EventDialog`、input / textarea / select /
+  checkbox、`datetime-local` のネイティブ date/time ピッカー、モーダルの背景、削除ボタン、
+  `ShareDialog`（既存リンクカード・失効ボタン・スクロール）、および初期テーマの 4 通り
+  （保存値なし × OS dark / light、手動 light / dark を選んだ後のリロード）は本番ブラウザで
+  確認済み。一方、`share-warn` の特定状態、`complete=false` の警告バナー、RPC 失敗バナーの
+  ダーク表示は**本番で故意に再現していない**。これらはコントラスト計算・コード監査・単体テストで
+  担保している。
 
 ### 修正履歴メモ
 - Phase 3 実地検証で、週/日ビューの `segmentForDay()`（`features/calendar/timeGrid.ts`）に
