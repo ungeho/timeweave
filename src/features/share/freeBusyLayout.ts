@@ -45,3 +45,19 @@ export function busyForDay(dayKey: string, timeZone: string, slots: FreeBusySlot
   timed.sort((a, b) => Date.parse(a.start) - Date.parse(b.start));
   return { timed, allDayCount };
 }
+
+/**
+ * True when the RPC gave a COMPLETE answer that discloses no busy at all.
+ *
+ * This is deliberately NOT "the token is invalid". `get_free_busy` answers
+ * `{ complete: true, slots: [] }` for a revoked, expired or unknown token AND
+ * for a valid token whose owner is simply free — the same bytes, on purpose, so
+ * that no caller can use the RPC as an existence oracle (migration 0009, step 2).
+ *
+ * The view therefore cannot say "this link is dead", only "nothing is shown
+ * here", which is why the note this drives has to cover both readings. What it
+ * must never do is let an empty grid stand as a positive claim of availability.
+ */
+export function hasNoDisclosedBusy(result: { complete: boolean; slots: FreeBusySlot[] }): boolean {
+  return result.complete && result.slots.length === 0;
+}

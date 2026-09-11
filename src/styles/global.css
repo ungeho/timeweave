@@ -399,6 +399,11 @@ body {
   border: 1px solid #e6b800;
   font-weight: 600;
 }
+.banner.info {
+  background: var(--bg-muted);
+  color: var(--text-muted);
+  border: 1px solid var(--border);
+}
 
 /* ---------- share dialog ---------- */
 .calendar-topbar {

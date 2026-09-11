@@ -7,6 +7,11 @@
  * reports complete=false, a prominent warning states that unshown times must not
  * be assumed free.
  *
+ * An empty grid is never left to speak for itself either: `get_free_busy` answers
+ * `{ complete: true, slots: [] }` for a revoked, expired or unknown token exactly
+ * as it does for a free owner — identical bytes, so that the RPC cannot be used as
+ * an existence oracle — so a note covering both readings accompanies that case.
+ *
  * Slots are re-merged client-side with mergeFreeBusySlots before display. The RPC
  * already merges server-side; running the same algorithm here means a future RPC
  * change (or an unmerged fallback) can never leak event count or boundaries
@@ -22,7 +27,7 @@ import { getUserTimeZone } from '../../utils/timezone';
 import { addDaysToDateString, formatTime } from '../../utils/datetime';
 import { useCalendarView } from '../../hooks/useCalendarView';
 import { buildWeekDays, weekRange, weekTitle } from '../calendar/weekGrid';
-import { busyForDay } from './freeBusyLayout';
+import { busyForDay, hasNoDisclosedBusy } from './freeBusyLayout';
 
 type Load =
   | { status: 'loading' }
@@ -95,6 +100,12 @@ export function FreeBusyPage({ token }: { token: string }) {
       {load.status === 'ok' && !load.result.complete && (
         <p className="banner warn" role="alert">
           この期間には未対応の繰り返し予定が含まれています。表示されていない時間も空いているとは限りません。
+        </p>
+      )}
+
+      {load.status === 'ok' && hasNoDisclosedBusy(load.result) && (
+        <p className="banner info">
+          この期間に共有されている予定はありません。共有リンクが失効または期限切れの場合も同じ表示になります。
         </p>
       )}
 

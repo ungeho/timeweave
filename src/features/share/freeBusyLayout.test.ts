@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { FreeBusySlot } from '../../types/share';
 import { dayStartInstantIso } from '../../utils/timezone';
-import { busyForDay } from './freeBusyLayout';
+import { busyForDay, hasNoDisclosedBusy } from './freeBusyLayout';
 
 const TZ = 'Asia/Tokyo';
 
@@ -60,6 +60,38 @@ describe('busyForDay — all-day', () => {
     expect(busyForDay('2026-09-01', TZ, slots).allDayCount).toBe(1);
     expect(busyForDay('2026-09-03', TZ, slots).allDayCount).toBe(1);
     expect(busyForDay('2026-09-04', TZ, slots).allDayCount).toBe(0);
+  });
+});
+
+describe('hasNoDisclosedBusy — an empty COMPLETE answer is not a claim of availability', () => {
+  it('is true for complete=true with no slots (free owner, revoked/expired/unknown token alike)', () => {
+    // The RPC returns these exact bytes for all four cases; the view must not
+    // try to tell them apart, only stop presenting the empty grid as "free".
+    expect(hasNoDisclosedBusy({ complete: true, slots: [] })).toBe(true);
+  });
+
+  it('is false as soon as any busy is disclosed', () => {
+    const timed: FreeBusySlot[] = [
+      { allDay: false, start: addHours(day0, 9), end: addHours(day0, 10) },
+    ];
+    expect(hasNoDisclosedBusy({ complete: true, slots: timed })).toBe(false);
+
+    const allDay: FreeBusySlot[] = [
+      { allDay: true, startDate: '2026-09-01', endDate: '2026-09-02' },
+    ];
+    expect(hasNoDisclosedBusy({ complete: true, slots: allDay })).toBe(false);
+  });
+
+  it('is false when the answer is incomplete, empty or not', () => {
+    // complete=false already has its own, stronger banner. Showing both would
+    // soften the one that matters.
+    expect(hasNoDisclosedBusy({ complete: false, slots: [] })).toBe(false);
+    expect(
+      hasNoDisclosedBusy({
+        complete: false,
+        slots: [{ allDay: true, startDate: '2026-09-01', endDate: '2026-09-02' }],
+      }),
+    ).toBe(false);
   });
 });
 
