@@ -390,13 +390,13 @@ body {
   margin-bottom: 0.75rem;
 }
 .banner.error {
-  background: #fdecec;
+  background: var(--danger-bg);
   color: var(--danger);
 }
 .banner.warn {
-  background: #fff3d6;
-  color: #7a5200;
-  border: 1px solid #e6b800;
+  background: var(--warn-bg);
+  color: var(--warn-text);
+  border: 1px solid var(--warn-border);
   font-weight: 600;
 }
 .banner.info {
@@ -448,7 +448,7 @@ body {
 .share-warn {
   margin: 0;
   font-size: 0.82rem;
-  color: #7a5200;
+  color: var(--warn-text);
 }
 .share-list {
   display: flex;

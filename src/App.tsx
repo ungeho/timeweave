@@ -3,8 +3,8 @@ import { CalendarPage } from './features/calendar/CalendarPage';
 import { FreeBusyPage } from './features/share/FreeBusyPage';
 import { AuthGate } from './auth/AuthGate';
 import { useAuth } from './auth/useAuth';
+import { resolveInitialTheme, type Theme } from './utils/theme';
 
-type Theme = 'light' | 'dark';
 const THEME_KEY = 'timeweave.theme';
 
 /** Extract a share token from a /s/:token path, else null. */
@@ -16,8 +16,11 @@ function shareTokenFromPath(): string | null {
 
 export function App() {
   const { user, authEnabled, signOut } = useAuth();
-  const [theme, setTheme] = useState<Theme>(
-    () => (localStorage.getItem(THEME_KEY) as Theme) || 'light',
+  const [theme, setTheme] = useState<Theme>(() =>
+    resolveInitialTheme(
+      localStorage.getItem(THEME_KEY),
+      window.matchMedia('(prefers-color-scheme: dark)').matches,
+    ),
   );
 
   useEffect(() => {
