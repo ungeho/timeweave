@@ -2,6 +2,8 @@
 
 個人用スケジューラー兼・空き時間共有 Web アプリ。React + TypeScript + Vite。
 
+本番: https://timeweave-five.vercel.app （ホスティング: Vercel / DB・認証: Supabase）
+
 ## セットアップ
 
 ```bash
@@ -30,9 +32,23 @@ VITE_SUPABASE_ANON_KEY=...   # Supabase anon key（公開前提。RLSが実際�
    - `0001_events.sql`: `events` テーブル・インデックス・`updated_at` トリガ・RLS
    - `0002_events_grants.sql`: `authenticated` ロールへの最小 DML 権限
    - `0003_exception_unique.sql`: 繰り返し例外の重複防止（部分 UNIQUE INDEX 2 本）
+   - `0004_share_links.sql`: 共有リンク（トークンは sha256 ハッシュのみ保存）
+   - `0005_free_busy_rpc.sql`: SECURITY DEFINER RPC 4 本（共有の唯一の入口）
+   - `0006_rrule_parser.sql`: SQL 側 RRULE パーサ（展開はせず narrowing のみ）
+   - `0007_allday_recurrence_freebusy.sql`: all-day 繰り返しの Free/Busy 展開
+   - `0008_events_timezone.sql`: `events.timezone` 列と書き込み時の状態機械
+   - `0009_timed_recurrence_freebusy.sql`: timed 繰り返しの展開（DST 対応）
+   - `0010_count_freebusy.sql`: `COUNT` 付き繰り返しの展開
+
+   `0006` 以降は `supabase/tests/` に preflight / postflight / テストスイートがある。
+   適用前に preflight、適用後に postflight とテストスイートを実行する運用
+   （テストスイートは `begin; … rollback;` でフィクスチャを残さない）。
 3. Authentication → Providers で **Google** を有効化し、Google Cloud の OAuth
    クライアント ID / Secret を設定。Authorized redirect に Supabase のコールバック URL、
-   アプリ側 Redirect URL に `http://localhost:5173`（開発）と本番 URL を登録。
+   アプリ側 Redirect URL に `http://localhost:5173`（開発）と本番 URL
+   （`https://timeweave-five.vercel.app`）を登録。`signInWithOAuth` は
+   `redirectTo: window.location.origin` を送るため、許可リストにないドメインからは
+   ログインが失敗する。
 
 ## アーキテクチャ（レイヤー分離）
 
@@ -105,7 +121,7 @@ Phase 1 は `LocalStorageEventRepository`、Phase 2 で `SupabaseEventRepository
   timed 例外のスロット照合ずれ（timestamptz 往復のISO表記差）と all-day 繰り返しの帯配置
   （マスター日付参照）の2不具合を検証中に発見・修正（下記「修正履歴メモ」）。例外重複
   （23505→`DuplicateExceptionError`）は自動テスト＋DB制約で担保（通常UI操作では再現困難）。
-- **Phase 5a（実装済み・実DB／実ブラウザ検証済み・未デプロイ）**: 共有 URL（`/s/:token`）と
+- **Phase 5a（完了・本番稼働中）**: 共有 URL（`/s/:token`）と
   匿名 Free/Busy 表示。
   `share_links` テーブル（`0004`）とマイグレーション `0005` の SECURITY DEFINER RPC 4本
   （`create_share_link` / `list_share_links` / `revoke_share_link` / `get_free_busy`）で構成。
@@ -113,13 +129,34 @@ Phase 1 は `LocalStorageEventRepository`、Phase 2 で `SupabaseEventRepository
   作成 / 一覧 / 失効 / URLコピーができ、`include_private` と `expires_at` を作成時に指定する。
   閲覧側 `FreeBusyPage` は `AuthGate` の外側でレンダリングされ、週送り以外の操作を持たない
   完全な読み取り専用。詳細は下記「共有のセキュリティ境界（Phase 5a）」。
+  本番では、未ログインのシークレットウィンドウから `/s/<token>` を直接開いて Free/Busy が
+  表示されること、リロードしても 404 にならないこと、予定のタイトル・内容が出ないことを
+  ブラウザで確認済み。
 - **Phase 5b-0（実装済み・実DB検証済み）**: SQL 側 RRULE パーサ（`0006`）。展開はまだ行わず、
   「UNTIL から終了済みと証明できる series」を completeness 判定から除外する narrowing のみ。
-- **Phase 5b-1（実装済み・DB未適用）**: all-day の `FREQ=DAILY` / `FREQ=WEEKLY` を
+- **Phase 5b-1（完了・実DB検証済み）**: all-day の `FREQ=DAILY` / `FREQ=WEEKLY` を
   Free/Busy へ展開（`0007`）。例外行とキャンセルも解決する。詳細は下記
-  「繰り返しの Free/Busy 展開（Phase 5b-1）」。
-- Phase 5b-2 以降（未着手）: `events.timezone` の追加と timed 繰り返しの展開、`COUNT`、
-  `FREQ=MONTHLY`。いずれも現状は `complete=false` に倒している。
+  「繰り返しの Free/Busy 展開」。
+- **Phase 5b-2（完了・実DB検証済み）**: `events.timezone` 列を追加（`0008`）。timed 繰り返し
+  マスターだけがゾーンを持つという状態機械を CHECK + BEFORE トリガで DB 側に強制し、
+  TypeScript 側は `services/timezoneRules.ts` がその写しを持つ。既存行の backfill はしない
+  （ゾーンを推測すると系列の意味が変わるため）。
+- **Phase 5b-3（完了・実DB検証済み）**: timed 繰り返しの Free/Busy 展開（`0009`）。
+  各回は master のゾーンの壁時計時刻で解決し、PostgreSQL の `AT TIME ZONE` と同じ規則を用いる
+  （存在しない時刻＝gap は変換後に 1 時間後へずれ、曖昧な時刻＝fold は**後の**インスタンスになる。
+  どちらも標準時オフセットでの解決結果で、こちらで発明も上書きもしない）。解決できないゾーンと、
+  ゾーンを持たない legacy マスターは展開せず `complete=false` に倒す。
+- **Phase 5b-4（完了）**: TypeScript 側の展開を `0009` の DST 意味論に合わせた
+  （SQL 変更なし）。ブラウザのローカルゾーンではなく `events.timezone` を基準に展開する。
+- **Phase 5b-5A（完了）**: TypeScript 側の展開候補をウィンドウから逆算する方式に変更し
+  （SQL 変更なし）、`COUNT` を「走査しながらの計数」から**序数の上界**へ改めた。
+  `BYDAY` は常に曜日順へ正規化する（順序が occurrence の**集合**を変えていた不具合の修正）。
+- **Phase 5b-5B（完了・実DB検証済み）**: `COUNT` 付き繰り返しを SQL 側でも展開（`0010`）。
+  all-day / timed の DAILY・WEEKLY に対し、TypeScript と同一の閉形式の序数契約を用いる。
+  終了済みの `COUNT` 系列は `complete=true` / `slots=[]` を返すようになった（従来は終了を
+  証明できず `complete=false` に倒れていた）。
+- Phase 5b で残っているのは **SQL 側の `FREQ=MONTHLY` 展開**（未着手）。
+  現状は `complete=false` に倒している。
 - Phase 6: ドラッグ&ドロップ、レスポンシブ改善、ダークモード仕上げ
 
 ## TODO / 既知の制約
@@ -139,6 +176,17 @@ Phase 1 は `LocalStorageEventRepository`、Phase 2 で `SupabaseEventRepository
   余白/角丸/継続マークの見せ方を Phase 6 で調整。
 - 参考（UX）: リロード時は表示月が当月に戻るため、他月に作成した予定は画面外になる。
   将来「作成直後にその月へ移動」等の導線を検討（Phase 6）。
+- **SQL 側の `FREQ=MONTHLY` は未展開（Phase 5b の残件）**: 月次の繰り返しを持つ owner の
+  共有ページは、その予定が触る期間で常に `complete=false`（警告バナー）になる。TypeScript 側は
+  MONTHLY を展開するが、その実装は 5b-4 / 5b-5A の対象外で、ゾーン非対応（ローカル時刻のまま）
+  かつ候補を DTSTART から走査する方式のまま（`services/recurrence.ts` に理由を明記）。
+- **all-day の陳腐化した例外を検出しない**: timed 側（`0009`）は、例外のスロットキーが生成された
+  どの回とも一致しない場合に `complete=false` へ倒すが、all-day 側に同じ検査がない。ずれる方向は
+  「busy を余分に出す」側なので空きを誤表示することはないが、対称ではない。
+- **ゾーンを持たない legacy な timed マスター（`0008` 以前の行）のうち、例外を持つものは
+  後からゾーンを設定できない**: 例外スナップショットが陳腐化するため `setSeriesTimezone` が
+  `SeriesEditBlockedError` で拒否する（`services/recurrenceOps.ts`）。該当する系列は
+  `complete=false` のままになる。
 
 ### 修正履歴メモ
 - Phase 3 実地検証で、週/日ビューの `segmentForDay()`（`features/calendar/timeGrid.ts`）に
@@ -195,13 +243,22 @@ Phase 1 は `LocalStorageEventRepository`、Phase 2 で `SupabaseEventRepository
 - **`include_private`**: `false` の共有リンクでは private の予定を busy 集合から除外する。
   busy 抽出と後述の `complete` 判定の**両方**に同じ条件が掛かる。
 - **Referrer 抑止**: 共有 URL にトークンが含まれるため、`index.html` に
-  `<meta name="referrer" content="no-referrer">` を置き Referer 経由の漏洩を防ぐ。
+  `<meta name="referrer" content="no-referrer">` を置き、さらに `vercel.json` で
+  `Referrer-Policy: no-referrer` を**全レスポンス**に付与する（下記「デプロイ構成（Vercel）」）。
+  meta は初期ナビゲーションや一部サブリソースを取りこぼしうるため、2 層で防ぐ。
 
-### 繰り返しの Free/Busy 展開（Phase 5b-1）
+### 繰り返しの Free/Busy 展開
 
-匿名 Free/Busy で展開するのは **all-day の `FREQ=DAILY` / `FREQ=WEEKLY`** のみ
-（`INTERVAL`、`BYDAY`(WEEKLY限定)、DATE 形式 `UNTIL` に対応）。
-`COUNT` / `FREQ=MONTHLY` / timed 繰り返しは未対応で、`complete=false` に倒す。
+匿名 Free/Busy で展開するのは **`FREQ=DAILY` / `FREQ=WEEKLY`**（all-day・timed の両方）で、
+`INTERVAL`、`BYDAY`（WEEKLY 限定）、`UNTIL`、`COUNT` に対応する。
+**`FREQ=MONTHLY` だけが未対応**で、`complete=false` に倒す。
+
+SQL 側のサブセットは、上記「RRULE 対応サブセット」（TypeScript 側）から `MONTHLY` を
+除いたものになっている。`UNTIL` の値型は時間モデルに従う（all-day は DATE、timed は instant）。
+`COUNT` と `UNTIL` の併用はパーサが malformed として弾くため、両方が同時に効くことはない。
+
+timed 系列は master の `events.timezone`（`0008`）の壁時計時刻で解決する。ゾーンを解決できない
+場合と、ゾーンを持たない legacy マスターは展開せず `complete=false` に倒す。
 
 - **展開の意味論は `services/recurrence.ts` と一致させる**: WEEKLY の週アンカーは DTSTART の
   週の月曜（RFC 5545 の既定 `WKST=MO`）、active week は DTSTART の週を第0週として
@@ -226,9 +283,11 @@ Phase 1 は `LocalStorageEventRepository`、Phase 2 で `SupabaseEventRepository
 開始がレンジ内かどうかでは、レンジ開始前から跨る複数日の予定を落としてしまう。
 
 この判定は `services/occurrences.ts` の `expandEvents`（duration を持つ層）にあり、
-単発予定・例外行と**同じ `overlapsRange` を共有**する。`expandRule` は「与えられた窓に
-入る開始日時」だけを答える責務のままで、RRULE の意味論（COUNT / UNTIL / 打ち切り）には
-触れていない。SQL 側（`0007`）も同じ重なり条件（`d + duration > from_date`）で実装しており、
+単発予定・例外行と**同じ `overlapsRange` を共有**する。`expandRule` が答えるのは「与えられた窓に
+入る開始日時」で、レンジ判定そのものには関与しない（ただし Phase 5b-5A 以降、`expandRule` は
+候補インデックスを窓から逆算し、`COUNT` を序数の上界として、`UNTIL` を開始日時に対して
+適用する）。SQL 側（all-day は `0007`、timed は `0009`）も同じ重なり条件
+（`d + duration > from_date`）で実装しており、
 **両実装の意味論は一致している**。境界は `occurrences.test.ts` で固定:
 レンジ開始前から跨る=含む、`end == rangeStart`=含まない、`start == rangeEnd`=含まない、
 完全内包=含む、レンジ全体を覆う=含む。
@@ -237,27 +296,66 @@ Phase 1 は `LocalStorageEventRepository`、Phase 2 で `SupabaseEventRepository
 
 `get_free_busy` は `{ complete: boolean, slots: [...] }` を返す。
 
-- busy 算出の対象は、単発予定に加えて **all-day の DAILY / WEEKLY 繰り返しとその例外行**
-  （Phase 5b-1）。timed 繰り返し・`COUNT`・`FREQ=MONTHLY` はまだ展開しない。
+- busy 算出の対象は、単発予定に加えて **all-day / timed の DAILY・WEEKLY 繰り返し
+  （`COUNT` 付きを含む）とその例外行**。`FREQ=MONTHLY` はまだ展開しない。
 - ウィンドウに寄与しうる行のうち**1つでも正確に扱えないものがあれば** `complete = false`。
   判断できない入力（未対応の文法、解釈不能な RRULE、展開量が上限超過、例外行の `all_day` が
-  親と食い違う等）はすべて**安全側＝不完全**に倒す。
+  親と食い違う、ゾーンを解決できない timed 系列等）はすべて**安全側＝不完全**に倒す。
 - `complete = true` が保証するのは「**開示対象の busy をすべて表示した**」であって
   「owner が暇である」ではない。`include_private=false` で除外された private 予定が
   空きに見えるのは owner の意図した挙動であり、この保証には反しない。
 - `complete = false` の意味は「**表示されている busy は正しいが、表示されていない時間を
   空きと見なしてはいけない**」。`FreeBusyPage` はこの場合に警告バナーを出す。
-- 閲覧画面は次の3状態を厳密に区別する。**取得失敗を空きとして描画することは絶対にない**:
+- 閲覧画面は次の4状態を厳密に区別する。**取得失敗を空きとして描画することは絶対にない**:
   1. `complete = false` → 不完全である旨の警告バナー＋ busy 表示
   2. RPC 失敗（`22023` やネットワークエラーを含む）→ グリッドを描画せず「取得失敗」表示
-  3. 正常成功 → Free/Busy 表示
+  3. `complete = true` かつ `slots = []` → 「この期間に共有されている予定はありません。
+     共有リンクが失効または期限切れの場合も同じ表示になります。」という注記を添える
+  4. `complete = true` かつ busy あり → Free/Busy 表示
 
-### デプロイ時 TODO（未対応・デプロイ先未確定のため保留）
+#### `complete = true` / `slots = []` を「空き」と読ませない（重要）
 
-- **SPA フォールバック**: `/s/:token` は Vite dev では index.html にフォールバックするが、
-  本番ホスティングには rewrite 設定が必要（未追加）。無いと共有 URL が 404 になる。
-- **Referrer-Policy を HTTP ヘッダでも送出**: 現状は `index.html` の `meta` のみ。
-  meta は初期ナビゲーションや一部サブリソースを取りこぼしうるため、ホスティング側で
-  `Referrer-Policy: no-referrer` ヘッダも設定する。
+`get_free_busy` は、**失効・期限切れ・不存在のトークン**に対しても、**有効なトークンで owner が
+その期間たまたま暇な場合**とまったく同じ `{ complete: true, slots: [] }` を返す。エラーも 404 も
+返さない。これは**共有トークンの存在オラクルを作らない**ための設計であり（上記「無効トークンは
+エラーにしない」）、変更しない。
+
+結果としてフロントは4者を**区別できず、区別しようともしない**。トークンの状態を見る分岐は
+閲覧側のコードに存在しない。一方で、区別できない応答をそのまま全日「—」のグリッドとして
+描画すると「この人は全期間空いている」という積極的な主張に見えてしまうため、この場合だけ
+上記3の注記を添えて、空きと断定できないようにしている（判定は `freeBusyLayout.ts` の純粋関数
+`hasNoDisclosedBusy()`＝`complete` が true かつ `slots.length === 0`、単体テストで固定）。
+
+有効なリンクで owner が本当に暇な週にも同じ注記が出る。これはオラクルを作らないために
+意図的に受け入れているコスト。
+
+この注記は本番ブラウザで 2 ケース確認済み（失効リンクで注記が出ること、有効リンクで busy が
+ある週は従来どおりで注記が出ないこと）。`complete = false` の警告と RPC 失敗表示は今回変更して
+おらず、既存分岐が保たれていることを単体テストと配信バンドルの検査で確認している（実機での
+故意の再現は未実施）。
+
+### デプロイ構成（Vercel）
+
+本番: https://timeweave-five.vercel.app（`main` への push で自動デプロイ）
+
+ホスティング設定は **`vercel.json` の 1 ファイルだけ**で、ビルドは Vercel の Vite 自動検出に
+任せる（`framework` / `outputDirectory` / `buildCommand` は書かない）。秘密情報は含まない。
+
+- **SPA フォールバック**: `/(.*)` → `/index.html` の rewrite。これが無いと `/s/:token` を
+  直接開いたときやリロード時に 404 になる。Vercel は**静的ファイルを rewrite より先に**
+  解決するため、この catch-all は `/assets/...` を巻き込まない。リダイレクト（3xx）は使わない:
+  ブラウザの URL が書き換わると、パス名からトークンを読む `App.tsx` の分岐が働かなくなる
+  （このアプリはルーターライブラリを使わず、`App.tsx` の正規表現 1 本でルーティングしている）。
+- **Referrer-Policy**: `Referrer-Policy: no-referrer` を**全レスポンス**に付与する。共有 URL に
+  トークンが載るため、`index.html` の `meta` だけでは初期ナビゲーションや一部サブリソースを
+  取りこぼしうる。`meta` は多層防御としてそのまま残す。
+- **Vercel の Environment Variables**: `VITE_SUPABASE_URL` / `VITE_SUPABASE_ANON_KEY` を
+  Production / Preview の両方に登録する。**未設定でもビルドは成功し、認証も共有も無い
+  ローカルモードのアプリが無言で公開される**ので、デプロイ後はログインボタンが出ることを
+  必ず確認する。`VITE_` 変数はビルド時に埋め込まれるため、後から追加した場合は再デプロイが必要。
+- **Supabase 側の設定**: Authentication → URL Configuration の Site URL と Redirect URLs に
+  本番 URL を登録する（上記「Supabase セットアップ」参照）。
+- SPA catch-all の帰結として、存在しない静的ファイルは 404 ではなく 200 + `index.html` を返す。
+  意図的な受容事項（真の 404 が必要になるのは favicon / robots.txt 等を足すとき）。
 - `0005` は pgcrypto が `extensions` スキーマにある前提（Supabase 既定）。適用前に
   `select extnamespace::regnamespace from pg_extension where extname='pgcrypto';` で確認する。
