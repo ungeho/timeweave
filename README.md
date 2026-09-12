@@ -28,7 +28,7 @@ VITE_SUPABASE_ANON_KEY=...   # Supabase anon key（公開前提。RLSが実際�
 ### Supabase セットアップ（Supabaseモードを使う場合）
 
 1. Supabase プロジェクトを作成し、URL / anon key を `.env` に設定。
-2. `supabase/migrations/` を番号順に SQL エディタ（または Supabase CLI）で適用。
+2. `supabase/migrations/` を番号順に Supabase の SQL エディタで適用（下記「マイグレーション運用」）。
    - `0001_events.sql`: `events` テーブル・インデックス・`updated_at` トリガ・RLS
    - `0002_events_grants.sql`: `authenticated` ロールへの最小 DML 権限
    - `0003_exception_unique.sql`: 繰り返し例外の重複防止（部分 UNIQUE INDEX 2 本）
@@ -39,6 +39,8 @@ VITE_SUPABASE_ANON_KEY=...   # Supabase anon key（公開前提。RLSが実際�
    - `0008_events_timezone.sql`: `events.timezone` 列と書き込み時の状態機械
    - `0009_timed_recurrence_freebusy.sql`: timed 繰り返しの展開（DST 対応）
    - `0010_count_freebusy.sql`: `COUNT` 付き繰り返しの展開
+   - `0011_content_and_quota_limits.sql`: 本文長の CHECK、所有者/マスタ単位の quota、
+     所有者をまたぐ例外を禁じる複合 FK
 
    `0006` 以降は `supabase/tests/` に preflight / postflight / テストスイートがある。
    適用前に preflight、適用後に postflight とテストスイートを実行する運用
@@ -49,6 +51,38 @@ VITE_SUPABASE_ANON_KEY=...   # Supabase anon key（公開前提。RLSが実際�
    （`https://timeweave-five.vercel.app`）を登録。`signInWithOAuth` は
    `redirectTo: window.location.origin` を送るため、許可リストにないドメインからは
    ログインが失敗する。
+
+### マイグレーション運用
+
+マイグレーションは **Supabase の SQL エディタから手動で全文実行する**。`supabase db push`
+は現時点では使わない。このプロジェクトは CLI のマイグレーション履歴を使っておらず、
+`supabase_migrations` スキーマ自体が存在しないため（2026-09-12 に `pg_catalog` で確認、
+`schema_exists = false`）、CLI は `0001` から再適用を試みて失敗する。
+
+適用済み: **`0001`〜`0011`**。
+
+`0011` の適用記録:
+
+| 項目 | 値 |
+| --- | --- |
+| ファイル | `supabase/migrations/0011_content_and_quota_limits.sql` |
+| SHA-256 | `30f3db36016fe7aaccedc11613632ca92e726016a04f522722c46acdccc41679` |
+| 適用日 | 2026-09-12（SQL エディタから全文実行） |
+| preflight | `0011_content_quota_preflight.sql` — 13 項目すべて `ok` |
+| postflight | `0011_content_quota_postflight.sql` — 44 assert すべて `ok`（`ord 85` は context） |
+| 外部確認 | postflight §10 を別セッションで実行 — 5 項目すべて一致 |
+
+`0011` が課す上限は次のとおり。本文長は `src/services/contentLimits.ts` と同じ数値で、
+`char_length`（コードポイント）≤ `String.length`（UTF-16 コードユニット）が常に成立するため、
+ブラウザが最も厳しく DB が最も緩い順になる。
+
+| 対象 | 上限 |
+| --- | --- |
+| `title` | 200 |
+| `category` | 50 |
+| `description` | 2000 |
+| 所有者あたりのイベント数 | 5000 |
+| 繰り返しマスタあたりの例外行数 | 500 |
 
 ## アーキテクチャ（レイヤー分離）
 
