@@ -34,7 +34,21 @@ export function occurrenceSlot(occ: EventOccurrence): {
 
 /**
  * A cancellation tombstone for "delete this occurrence". Carries valid (unused)
- * time fields to satisfy the DB shape CHECK; display fields copy the master.
+ * time fields to satisfy the DB shape CHECK.
+ *
+ * The display fields are left EMPTY rather than copied from the master, because
+ * a tombstone has no content to show: `expandEvents` drops cancelled rows before
+ * they can become occurrences (`occurrences.ts`, "if (ex.isCancelled) continue"),
+ * so nothing ever reads them. A cancelled row reaches the rest of the app only
+ * through its slot key, which detaches the occurrence it names.
+ *
+ * Copying them was not merely redundant: it was the one write path that put
+ * content into a row without it passing the dialog, so a master whose title
+ * predates any future length limit could not have a single occurrence deleted.
+ *
+ * `visibility` IS still copied, and deliberately: `get_free_busy` reads it on
+ * exception rows (cancelled ones included) when deciding whether a window is
+ * complete. Blanking it would change what the share page reports.
  */
 export function buildCancellation(occ: EventOccurrence): ExceptionInput {
   const master = occ.event;
@@ -54,9 +68,9 @@ export function buildCancellation(occ: EventOccurrence): ExceptionInput {
     ...slot,
     isCancelled: true,
     ...time,
-    title: master.title,
-    description: master.description,
-    category: master.category,
+    title: '',
+    description: null,
+    category: null,
     visibility: master.visibility,
   };
 }

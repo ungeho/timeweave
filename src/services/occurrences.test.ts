@@ -95,6 +95,29 @@ describe('expandEvents — recurring', () => {
     expect(occ.map((o) => o.start)).not.toContain(slot);
   });
 
+  it('cancels by slot key alone, so a tombstone carrying no content still works', () => {
+    // buildCancellation leaves title/description/category blank: a cancelled row
+    // is dropped here before it can become an occurrence, so it has nothing to
+    // display. This pins that the cancellation itself rides on the slot key and
+    // is unaffected by that blankness.
+    const slot = new Date(2026, 7, 10, 10).toISOString();
+    const rows = [
+      base({ id: 'm', rrule: 'FREQ=WEEKLY;BYDAY=MO' }),
+      base({
+        id: 'cancel',
+        recurrenceId: 'm',
+        recurrenceSlotStart: slot,
+        isCancelled: true,
+        title: '',
+        description: null,
+        category: null,
+      }),
+    ];
+    const occ = expandEvents(rows, range.start, range.end);
+    expect(occ).toHaveLength(4);
+    expect(occ.map((o) => o.start)).not.toContain(slot);
+  });
+
   it('replaces an occurrence with a moved exception (timed)', () => {
     const slot = new Date(2026, 7, 10, 10).toISOString();
     const moved = new Date(2026, 7, 10, 15).toISOString();

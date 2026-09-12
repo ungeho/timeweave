@@ -50,7 +50,7 @@ describe('occurrenceSlot', () => {
 });
 
 describe('buildCancellation', () => {
-  it('builds a timed tombstone with the master display fields', () => {
+  it('builds a timed tombstone that carries no content of its own', () => {
     const occ = timedOcc(master(), '2026-08-31T00:00:00.000Z', '2026-08-31T01:00:00.000Z');
     expect(buildCancellation(occ)).toEqual({
       recurrenceId: 'm',
@@ -62,7 +62,14 @@ describe('buildCancellation', () => {
       endAt: '2026-08-31T01:00:00.000Z',
       startDate: null,
       endDate: null,
-      title: '定例会', description: 'メモ', category: '仕事', visibility: 'busy_only',
+      // Blank, NOT the master's '定例会' / 'メモ' / '仕事'. A cancelled row is
+      // dropped by expandEvents before it can become an occurrence, so these are
+      // never displayed; copying them only smuggled unvalidated content into a
+      // row that no form had seen.
+      title: '', description: null, category: null,
+      // visibility IS still the master's: get_free_busy reads it on exception
+      // rows, cancelled ones included, when judging whether a window is complete.
+      visibility: 'busy_only',
     });
   });
 

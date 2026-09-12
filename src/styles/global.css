@@ -154,6 +154,10 @@ body {
   flex-direction: column;
   gap: 0.2rem;
   min-height: 0;
+  /* A grid item's automatic minimum size is its content, so without this a long
+     unbreakable title could widen its column and unbalance the week. The chips
+     inside already clip; this stops the cell itself from reporting their width. */
+  min-width: 0;
 }
 .month-cell:nth-child(7n) {
   border-right: none;
@@ -388,10 +392,14 @@ body {
 }
 
 /* ---------- banners ---------- */
+/* Banners carry messages we do not author: a Postgres error arrives verbatim,
+   and a constraint violation quotes the offending row back at us. Break
+   anywhere rather than let one long token run out of the box. */
 .banner {
   padding: 0.5rem 0.75rem;
   border-radius: 8px;
   margin-bottom: 0.75rem;
+  overflow-wrap: anywhere;
 }
 .banner.error {
   background: var(--danger-bg);
@@ -488,8 +496,15 @@ body {
   flex: 1;
   min-width: 0;
 }
+/* share_links.label is unconstrained text and, like the event fields, can
+   predate any input limit or arrive straight from the API. Clip it here so one
+   long label cannot stretch the card. The parent already carries min-width: 0,
+   which is what lets this shrink far enough to ellipsise. */
 .share-link-label {
   font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .share-link-status {
   font-size: 0.75rem;
@@ -639,10 +654,12 @@ body {
   display: flex;
   gap: 0.6rem;
 }
+/* Same reasoning as .banner: this also shows raw persistence errors. */
 .form-error {
   color: var(--danger);
   font-size: 0.85rem;
   margin: 0;
+  overflow-wrap: anywhere;
 }
 /* Which timezone a timed recurrence will be stored with. */
 .form-hint {

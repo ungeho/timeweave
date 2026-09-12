@@ -16,6 +16,12 @@ import {
   toDatetimeLocalValue,
 } from '../../utils/datetime';
 import { formatRRule, parseRRule } from '../../services/recurrence';
+import {
+  contentLengthError,
+  CATEGORY_MAX,
+  DESCRIPTION_MAX,
+  TITLE_MAX,
+} from '../../services/contentLimits';
 import { editTimezoneIntent } from '../../services/timezoneRules';
 import { resolveStorableTimeZone } from '../../utils/timezone';
 import {
@@ -266,6 +272,16 @@ export function EventDialog({
       visibility,
     };
 
+    // Checked on the trimmed values, so trailing whitespace never costs a
+    // character. The inputs carry the same limits as maxLength, so typing cannot
+    // reach here over the line; a paste into a field the browser truncated, or a
+    // value loaded from a row that predates these limits, still can.
+    const tooLong = contentLengthError(content);
+    if (tooLong) {
+      setFormError(tooLong);
+      return null;
+    }
+
     let time: FormTime;
     let dtstartIso: string;
     if (allDay) {
@@ -449,7 +465,12 @@ export function EventDialog({
 
         <label className="field">
           <span>タイトル</span>
-          <input value={title} onChange={(e) => setTitle(e.target.value)} autoFocus />
+          <input
+            value={title}
+            onChange={(e) => setTitle(e.target.value)}
+            maxLength={TITLE_MAX}
+            autoFocus
+          />
         </label>
 
         <label className="field checkbox">
@@ -500,13 +521,22 @@ export function EventDialog({
 
         <label className="field">
           <span>メモ</span>
-          <textarea value={description} onChange={(e) => setDescription(e.target.value)} rows={3} />
+          <textarea
+            value={description}
+            onChange={(e) => setDescription(e.target.value)}
+            maxLength={DESCRIPTION_MAX}
+            rows={3}
+          />
         </label>
 
         <div className="field-row">
           <label className="field">
             <span>カテゴリ</span>
-            <input value={category} onChange={(e) => setCategory(e.target.value)} />
+            <input
+              value={category}
+              onChange={(e) => setCategory(e.target.value)}
+              maxLength={CATEGORY_MAX}
+            />
           </label>
           <label className="field">
             <span>公開範囲</span>
