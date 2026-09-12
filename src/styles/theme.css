@@ -24,6 +24,19 @@
   /* calendar layout tokens (theme-independent) */
   --band-h: 20px;
   --gutter-w: 52px;
+
+  /* Height contract of the calendar view area. It lives here so the loading
+     placeholder can reserve the SAME box the real view is about to occupy
+     rather than repeating literals: both read these tokens, so changing one
+     moves the view and its placeholder together.
+       --month-row-h    one week row of the month grid. The grid is always six
+                        rows (buildMonthGrid returns 42 cells), so the month's
+                        minimum height is 6x this. Overridden below 640px.
+       --timegrid-h     the week/day grid's height, with
+       --timegrid-min-h its floor on short viewports. */
+  --month-row-h: 84px;
+  --timegrid-h: calc(100vh - 200px);
+  --timegrid-min-h: 420px;
 }
 
 :root[data-theme='dark'] {

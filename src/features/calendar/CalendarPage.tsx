@@ -113,7 +113,17 @@ export function CalendarPage() {
 
       {isAwaitingRows({ loading: events.loading, rowCount: events.rows.length }) ? (
         // Nothing has arrived yet: an empty grid here would read as "no events".
-        <p className="app-loading">読み込み中…</p>
+        // The placeholder reserves the box the incoming view will occupy — sized
+        // from the same tokens that view uses — so the grid's arrival does not
+        // shove the page down. Which box depends on the mode we are about to
+        // render, hence the same month/other split as the branches below.
+        <div
+          className={`app-loading calendar-placeholder calendar-placeholder--${
+            view.mode === 'month' ? 'month' : 'timegrid'
+          }`}
+        >
+          読み込み中…
+        </div>
       ) : view.mode === 'month' ? (
         <MonthView
           anchor={view.anchor}

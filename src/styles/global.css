@@ -43,6 +43,10 @@ body {
   min-height: 0;
   padding: 1rem;
   overflow: auto;
+  /* Reserve the scrollbar track whether or not it is in use. Without this the
+     bar appears the moment the calendar replaces the loading placeholder, and
+     the narrower content box reflows the toolbar sideways. */
+  scrollbar-gutter: stable;
 }
 
 /* ---------- buttons ---------- */
@@ -139,7 +143,7 @@ body {
 .month-week-grid {
   display: grid;
   grid-template-columns: repeat(7, 1fr);
-  grid-auto-rows: minmax(84px, 1fr);
+  grid-auto-rows: minmax(var(--month-row-h), 1fr);
 }
 .month-cell {
   border-right: 1px solid var(--border);
@@ -289,8 +293,8 @@ body {
   border-radius: 12px;
   overflow: hidden;
   background: var(--bg-elevated);
-  height: calc(100vh - 200px);
-  min-height: 420px;
+  height: var(--timegrid-h);
+  min-height: var(--timegrid-min-h);
 }
 .timegrid-head {
   display: flex;
@@ -736,6 +740,40 @@ body {
   color: var(--text-muted);
 }
 
+/* Calendar view area standing in for the grid while the first rows are in
+   flight. It is NOT a skeleton: it shows the same "読み込み中…" text and draws
+   no fake cells or events. Its only job is to occupy the box the real view is
+   about to occupy, so the grid's arrival does not jump the page.
+   It borrows the height tokens from the views but none of their other layout
+   rules, so `.month` / `.timegrid` stay free to change independently. Matching
+   the real height exactly is not the goal: the weekday header and all-day
+   bands leave a residue of a few tens of pixels, against a jump of ~450px. */
+.calendar-placeholder {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--bg-elevated);
+  color: var(--text-muted);
+}
+/* Six week rows, as buildMonthGrid always produces. Written as a sum of six so
+   the row count is literal in the declaration and --month-row-h stays the only
+   source of the row height: change that token and the real grid and this box
+   move together. min-height, not height, because the real month grows past this
+   when a cell overflows. */
+.calendar-placeholder--month {
+  min-height: calc(
+    var(--month-row-h) + var(--month-row-h) + var(--month-row-h) +
+    var(--month-row-h) + var(--month-row-h) + var(--month-row-h)
+  );
+}
+/* The week/day grid's own height contract, which is data-independent. */
+.calendar-placeholder--timegrid {
+  height: var(--timegrid-h);
+  min-height: var(--timegrid-min-h);
+}
+
 /* ---------- login ---------- */
 .login {
   display: flex;
@@ -774,8 +812,10 @@ body {
   .app-main {
     padding: 0.5rem;
   }
-  .month-week-grid {
-    grid-auto-rows: minmax(64px, 1fr);
+  /* Set on :root, not on .month-week-grid, so the loading placeholder shrinks
+     with the grid it is reserving space for. */
+  :root {
+    --month-row-h: 64px;
   }
   .variant-chip .event-chip-time {
     display: none;
