@@ -288,6 +288,78 @@ body {
   color: var(--text-muted);
   padding-left: 4px;
 }
+/* The same label as a control, when the month view passes onOverflowClick. The
+   week/day header leaves it a plain span: those views show every lane, so their
+   overflow is empty and there is nothing to open. */
+.allday-overflow.is-button {
+  justify-self: start;
+  border: none;
+  background: none;
+  font: inherit;
+  font-size: 0.68rem;
+  color: var(--text-muted);
+  cursor: pointer;
+  border-radius: 4px;
+}
+.allday-overflow.is-button:hover {
+  background: var(--bg-muted);
+  color: var(--text);
+}
+
+/* "+N" under a month cell's chips -- the same label the all-day lane uses for
+   its own overflow. Sized and spaced like a chip so the stack stays on the
+   --month-row-h budget: one of these occupies exactly the row a fourth chip
+   would have. */
+.month-more {
+  display: block;
+  width: 100%;
+  text-align: left;
+  border: none;
+  background: none;
+  font: inherit;
+  font-size: 0.7rem;
+  color: var(--text-muted);
+  padding: 1px 5px;
+  border-radius: 4px;
+  cursor: pointer;
+  /* One line, always. Wrapping costs a second row the cell has not budgeted
+     for, which on a 390px phone is what made three chips look cramped even
+     though they technically fitted. Clip rather than wrap if a large count
+     ever runs out of width. */
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.month-more:hover {
+  background: var(--bg-muted);
+  color: var(--text);
+}
+
+/* ---------- day agenda dialog ---------- */
+.day-agenda-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.day-agenda-group {
+  margin: 0.4rem 0 0.1rem;
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+.day-agenda-group:first-child {
+  margin-top: 0;
+}
+.day-agenda-empty {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 0.85rem;
+}
+/* Inside the dialog there is room to read the whole title, unlike in a cell. */
+.day-agenda-list .event-chip {
+  font-size: 0.8rem;
+  padding: 4px 7px;
+}
 
 /* ---------- week / day time grid ---------- */
 .timegrid {

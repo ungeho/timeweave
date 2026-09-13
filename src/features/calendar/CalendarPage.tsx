@@ -8,10 +8,12 @@ import { getUserTimeZone, instantFromZonedDayMinutes } from '../../utils/timezon
 import { ShareDialog } from '../share/ShareDialog';
 import { CalendarToolbar } from './CalendarToolbar';
 import { MonthView } from './MonthView';
+import { DayAgendaDialog } from './DayAgendaDialog';
 import { TimeGridView } from './TimeGridView';
 import { isAwaitingRows } from './loadState';
 import { monthGridRange } from './monthGrid';
 import { buildDayCell, buildWeekDays, dayRange, weekRange } from './weekGrid';
+import { buildDayAgenda } from './dayAgenda';
 import {
   EventDialog,
   type DialogState,
@@ -33,6 +35,10 @@ export function CalendarPage() {
   const events = useEvents();
   const [dialog, setDialog] = useState<DialogState | null>(null);
   const [shareOpen, setShareOpen] = useState(false);
+  // Which day's full listing is open, or null. A date rather than the agenda
+  // itself, so the list re-derives from the live occurrences: saving an edit
+  // from inside the dialog is reflected the moment it reopens.
+  const [agendaDay, setAgendaDay] = useState<string | null>(null);
   const timeZone = useMemo(() => getUserTimeZone(), []);
 
   const range = useMemo(() => {
@@ -51,6 +57,11 @@ export function CalendarPage() {
     if (view.mode === 'day') return [buildDayCell(view.anchor, timeZone)];
     return [];
   }, [view.mode, view.anchor, timeZone]);
+
+  const agenda = useMemo(
+    () => (agendaDay ? buildDayAgenda(agendaDay, occurrences, timeZone) : null),
+    [agendaDay, occurrences, timeZone],
+  );
 
   // Month day click: default a 1-hour slot at 09:00 local on the clicked day.
   const openCreateForDay = (dayKey: string) => {
@@ -131,6 +142,7 @@ export function CalendarPage() {
           occurrences={occurrences}
           onDayClick={openCreateForDay}
           onOccurrenceClick={openEdit}
+          onDayAgendaOpen={setAgendaDay}
         />
       ) : (
         <TimeGridView
@@ -150,6 +162,16 @@ export function CalendarPage() {
           onDelete={handleDelete}
           onSetSeriesTimezone={events.setSeriesTimezone}
           onClose={() => setDialog(null)}
+        />
+      )}
+
+      {/* Rendered before EventDialog would be, but they never coexist: opening an
+          entry closes the agenda in the same click. */}
+      {agenda && (
+        <DayAgendaDialog
+          agenda={agenda}
+          onOccurrenceClick={openEdit}
+          onClose={() => setAgendaDay(null)}
         />
       )}
 

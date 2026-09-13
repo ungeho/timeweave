@@ -4,6 +4,8 @@ import { zonedDayKey } from '../../utils/timezone';
 import { buildMonthGrid, type MonthGridCell } from './monthGrid';
 import { AllDayLane } from './AllDayLane';
 import { EventChip } from './EventChip';
+import { COMPACT_MONTH_QUERY, monthChipCap, splitMonthCellChips } from './dayAgenda';
+import { useMediaQuery } from '../../hooks/useMediaQuery';
 
 interface Props {
   anchor: Date;
@@ -13,11 +15,30 @@ interface Props {
   onDayClick: (dayKey: string) => void;
   /** Clicking an occurrence opens it for editing. */
   onOccurrenceClick: (occ: EventOccurrence) => void;
+  /**
+   * Opens the full day listing. Reached from either overflow affordance -- the
+   * all-day lane's "+N" and a cell's "+N" -- because a day truncated on one
+   * side is usually busy on the other, and one list answers both.
+   */
+  onDayAgendaOpen: (dayKey: string) => void;
 }
 
 const WEEKDAY_LABELS = ['月', '火', '水', '木', '金', '土', '日'];
 
-export function MonthView({ anchor, timeZone, occurrences, onDayClick, onOccurrenceClick }: Props) {
+export function MonthView({
+  anchor,
+  timeZone,
+  occurrences,
+  onDayClick,
+  onOccurrenceClick,
+  onDayAgendaOpen,
+}: Props) {
+  // The cell's chip budget follows the row height, which the same breakpoint
+  // lowers in CSS. Subscribed rather than read once, so rotating a phone or
+  // dragging a desktop window across 640px re-lays the grid instead of leaving
+  // it clipped at the old cap.
+  const chipCap = monthChipCap(useMediaQuery(COMPACT_MONTH_QUERY));
+
   const weeks = useMemo(() => {
     const cells = buildMonthGrid(anchor);
     const chunks: MonthGridCell[][] = [];
@@ -58,10 +79,16 @@ export function MonthView({ anchor, timeZone, occurrences, onDayClick, onOccurre
               dayKeys={week.map((c) => c.dayKey)}
               occurrences={allDayOccs}
               onOccurrenceClick={onOccurrenceClick}
+              onOverflowClick={onDayAgendaOpen}
             />
             <div className="month-week-grid">
               {week.map((cell) => {
                 const dayEvents = timedByDay.get(cell.dayKey) ?? [];
+                // Capped so the cell cannot outgrow --month-row-h. Before this,
+                // every timed occurrence was rendered and `.month-cell-events`
+                // (overflow: hidden) simply clipped the surplus -- invisible and
+                // uncountable.
+                const { visible, hiddenCount } = splitMonthCellChips(dayEvents, chipCap);
                 return (
                   <div
                     key={cell.dayKey}
@@ -74,7 +101,7 @@ export function MonthView({ anchor, timeZone, occurrences, onDayClick, onOccurre
                   >
                     <div className="month-cell-date">{cell.date.getDate()}</div>
                     <div className="month-cell-events">
-                      {dayEvents.map((occ) => (
+                      {visible.map((occ) => (
                         <EventChip
                           key={`${occ.event.id}-${occ.start}`}
                           occurrence={occ}
@@ -85,6 +112,26 @@ export function MonthView({ anchor, timeZone, occurrences, onDayClick, onOccurre
                           }}
                         />
                       ))}
+                      {hiddenCount > 0 && (
+                        <button
+                          type="button"
+                          className="month-more"
+                          onClick={(e) => {
+                            // Without this the cell's own handler fires too and
+                            // opens the "new event" dialog behind the agenda.
+                            e.stopPropagation();
+                            onDayAgendaOpen(cell.dayKey);
+                          }}
+                          // The visible label matches the all-day lane's "+N",
+                          // so one day's two truncations read as one idiom. The
+                          // spoken and hover text stay descriptive: "+3" on its
+                          // own says nothing about what it opens.
+                          aria-label={`他 ${hiddenCount} 件の予定を表示`}
+                          title={`他 ${hiddenCount} 件の予定を表示`}
+                        >
+                          +{hiddenCount}
+                        </button>
+                      )}
                     </div>
                   </div>
                 );
