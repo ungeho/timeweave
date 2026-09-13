@@ -41,6 +41,8 @@ VITE_SUPABASE_ANON_KEY=...   # Supabase anon key（公開前提。RLSが実際�
    - `0010_count_freebusy.sql`: `COUNT` 付き繰り返しの展開
    - `0011_content_and_quota_limits.sql`: 本文長の CHECK、所有者/マスタ単位の quota、
      所有者をまたぐ例外を禁じる複合 FK
+   - `0012_event_write_rate_limit.sql`: 所有者単位の**書き込みレート**制限（GCRA）。
+     状態は非公開スキーマ `timeweave_private` に置く
 
    `0006` 以降は `supabase/tests/` に preflight / postflight / テストスイートがある。
    適用前に preflight、適用後に postflight とテストスイートを実行する運用
@@ -59,7 +61,51 @@ VITE_SUPABASE_ANON_KEY=...   # Supabase anon key（公開前提。RLSが実際�
 `supabase_migrations` スキーマ自体が存在しないため（2026-09-12 に `pg_catalog` で確認、
 `schema_exists = false`）、CLI は `0001` から再適用を試みて失敗する。
 
-適用済み: **`0001`〜`0011`**。
+適用済み: **`0001`〜`0012`**。
+
+`0012` の適用記録:
+
+| 項目 | 値 |
+| --- | --- |
+| ファイル | `supabase/migrations/0012_event_write_rate_limit.sql` |
+| SHA-256 | `455421779b732f179a9485b59425b2a81178d6154b0e4eec69236134bf26ca4b` |
+| 適用日 | 2026-09-13（SQL エディタから全文実行） |
+| preflight | `0012_rate_limit_preflight.sql` — gate 項目すべて `ok`（`ord 23/33/40-43` は context） |
+| postflight | `0012_rate_limit_postflight.sql` — 36 assert すべて `ok`（`ord 43/46/47/50` は context） |
+| テスト | `0012_rate_limit_test.sql` — `ord 1-54` すべて `ok`、ロールバック後の残留 0 を確認 |
+| 手動確認 | REST で state テーブルが 404 `PGRST205`（不可視）、パラメータ関数は 200 |
+| 本番スモーク | アプリから 1 件保存 → `charged_rows = 1` / debt 1 秒 |
+
+`0012` が課す制限:
+
+| 項目 | 値 |
+| --- | --- |
+| 定常レート | 60 writes / 分（`T` = 1 秒 / 行） |
+| バースト | 120 行（`tau` = `burst × T` = 120 秒） |
+| 単位 | 所有者ごと。通常イベントと例外行は同じバケット |
+| 対象 | `INSERT` と `UPDATE` を**行数**で課金。`DELETE` は対象外 |
+| 超過時 | SQLSTATE `PT429`（HTTP 429）/ `DETAIL = TIMEWEAVE_RATE_EVENTS` / `HINT` に `retry_after_seconds=N` |
+
+設計上の要点（詳細はマイグレーション本文のコメント）:
+
+- **DELETE を課金しない**のは意図的。持続的な削除には同量の INSERT が必要で、そちらは課金される。
+  片付ける方向を塞がないという `0011` の delta rule と同じ原則。
+- **advisory lock を使わない**。`INSERT … ON CONFLICT DO UPDATE … RETURNING` が行ロックを取り
+  最新コミット版で再評価するため、READ COMMITTED で hard limit が成立する。
+  本番で 100 並列を実測して確認済み（`0012_rate_concurrency_probe.sql`）。
+  `0011` が予約した advisory class 811003 は未使用のまま。
+- **時計は `statement_timestamp()`**。`now()` は最も単純なリクエストでも約 6ms 古い（実測）。
+- **`auth.uid()` が NULL の呼び出しは免除**（マイグレーション・復旧・service_role）。
+  トリガ内では `current_user` / `session_user` がエンドユーザーを指さないため、判別できるのは
+  `auth.uid()` だけであることを実測で確認している（`0012_rest_identity_probe.sql`）。
+- **状態テーブルは `timeweave_private`**。`public` の新規テーブルには default privileges が
+  `anon` に `TRUNCATE` を付与し、**TRUNCATE は RLS を通らない**ため（実測）。
+- これは**コミットされた書き込み流量**の制限であって、リクエスト流量の制限ではない。
+  拒否された文はロールバックされ、自身の消費も巻き戻る。requests/分は引き続きエッジ側の責務。
+
+`supabase/tests/0012_*_probe.sql` の 3 本は、PostgREST / Supabase / PostgreSQL の実装依存挙動を
+測るもので、`0011_enr_security_definer_probe.sql` と同じ理由で**意図的に残してある**。
+プラットフォームのアップグレード後や、上記の設計判断を変更する前に再実行する。
 
 `0011` の適用記録:
 
