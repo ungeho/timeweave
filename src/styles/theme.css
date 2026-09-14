@@ -29,12 +29,18 @@
      placeholder can reserve the SAME box the real view is about to occupy
      rather than repeating literals: both read these tokens, so changing one
      moves the view and its placeholder together.
-       --month-row-h    one week row of the month grid. The grid is always six
-                        rows (buildMonthGrid returns 42 cells), so the month's
-                        minimum height is 6x this. Overridden below 640px.
+       --month-date-h   the date label row at the top of a month week
+       --month-slot-h   one item row below it: a band, a chip or "+N"
+       --month-slot-gap the space above each item row
+     A month week is --month-date-h plus --month-slots item rows (global.css,
+     --month-week-h). The row COUNT is deliberately not a token here: it is
+     monthSlotCount() over COMPACT_MONTH_QUERY in TypeScript, handed to the grid
+     inline, so it has exactly one definition.
        --timegrid-h     the week/day grid's height, with
        --timegrid-min-h its floor on short viewports. */
-  --month-row-h: 84px;
+  --month-date-h: 22px;
+  --month-slot-h: 18px;
+  --month-slot-gap: 2px;
   --timegrid-h: calc(100vh - 200px);
   --timegrid-min-h: 420px;
 }

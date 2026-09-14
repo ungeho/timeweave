@@ -7,7 +7,7 @@ import { isSupabaseConfigured } from '../../lib/supabase';
 import { getUserTimeZone, instantFromZonedDayMinutes } from '../../utils/timezone';
 import { ShareDialog } from '../share/ShareDialog';
 import { CalendarToolbar } from './CalendarToolbar';
-import { MonthView } from './MonthView';
+import { MonthView, monthSlotsStyle, useMonthSlots } from './MonthView';
 import { DayAgendaDialog } from './DayAgendaDialog';
 import { TimeGridView } from './TimeGridView';
 import { isAwaitingRows } from './loadState';
@@ -40,6 +40,9 @@ export function CalendarPage() {
   // from inside the dialog is reflected the moment it reopens.
   const [agendaDay, setAgendaDay] = useState<string | null>(null);
   const timeZone = useMemo(() => getUserTimeZone(), []);
+  // Only for the month placeholder's height: MonthView reads the same hook, so
+  // the box reserved while loading has the row count the grid will render with.
+  const monthSlots = useMonthSlots();
 
   const range = useMemo(() => {
     if (view.mode === 'month') return monthGridRange(view.anchor);
@@ -132,6 +135,7 @@ export function CalendarPage() {
           className={`app-loading calendar-placeholder calendar-placeholder--${
             view.mode === 'month' ? 'month' : 'timegrid'
           }`}
+          style={view.mode === 'month' ? monthSlotsStyle(monthSlots) : undefined}
         >
           読み込み中…
         </div>

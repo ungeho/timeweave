@@ -136,30 +136,42 @@ body {
   display: flex;
   flex-direction: column;
 }
+/* Height of one week. Declared on the two elements that carry --month-slots
+   inline (the grid and its loading placeholder), because a custom property
+   resolves its var() references where it is declared: on :root it would see no
+   slot count at all. --month-slots itself is never written in CSS. */
+.month,
+.calendar-placeholder--month {
+  --month-week-h: calc(
+    var(--month-date-h) + var(--month-slots) * (var(--month-slot-h) + var(--month-slot-gap))
+  );
+}
+/* One week: a date row plus --month-slots item rows, every track a fixed length,
+   and a height that is exactly their sum. buildMonthWeekLayout never places more
+   than --month-slots rows of items on a day and always puts "+N" in the last of
+   them, so nothing it produces can make a week taller or push "+N" out of view.
+   overflow:hidden is only a backstop for a font that renders taller than a row. */
 .month-week {
-  display: flex;
-  flex-direction: column;
-}
-.month-week-grid {
   display: grid;
-  grid-template-columns: repeat(7, 1fr);
-  grid-auto-rows: minmax(var(--month-row-h), 1fr);
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  grid-template-rows: var(--month-date-h) repeat(var(--month-slots), var(--month-slot-h));
+  grid-auto-rows: 0;
+  row-gap: var(--month-slot-gap);
+  height: var(--month-week-h);
+  overflow: hidden;
 }
+/* A day's background and click target. It spans every row of the week, and the
+   bands, chips and "+N" come later in DOM order, so they sit on top of it. */
 .month-cell {
+  grid-row: 1 / -1;
   border-right: 1px solid var(--border);
   border-bottom: 1px solid var(--border);
-  padding: 0.25rem;
   cursor: pointer;
-  display: flex;
-  flex-direction: column;
-  gap: 0.2rem;
-  min-height: 0;
-  /* A grid item's automatic minimum size is its content, so without this a long
-     unbreakable title could widen its column and unbalance the week. The chips
-     inside already clip; this stops the cell itself from reporting their width. */
+  /* A grid item's automatic minimum size is its content; the columns are
+     minmax(0, 1fr) and this keeps the cell from reporting any width either. */
   min-width: 0;
 }
-.month-cell:nth-child(7n) {
+.month-cell:nth-child(7) {
   border-right: none;
 }
 .month-cell:hover {
@@ -173,16 +185,26 @@ body {
   background: var(--today);
 }
 .month-cell-date {
+  height: var(--month-date-h);
+  line-height: var(--month-date-h);
+  padding: 0 0.4rem;
   font-size: 0.8rem;
   font-weight: 600;
-  align-self: flex-start;
-  padding: 0.1rem 0.3rem;
 }
-.month-cell-events {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  overflow: hidden;
+/* Everything the layout places in a week is exactly one item row tall and inset
+   from the cell borders. Width comes from the grid track rather than from 100%,
+   which would overflow the track by the inset. */
+.month-week > .allday-band,
+.month-week > .event-chip,
+.month-week > .month-more {
+  width: auto;
+  height: var(--month-slot-h);
+  min-width: 0;
+  margin-inline: 2px;
+}
+.month-week > .event-chip {
+  padding-block: 0;
+  line-height: 1;
 }
 
 /* ---------- event chip ---------- */
@@ -306,10 +328,9 @@ body {
   color: var(--text);
 }
 
-/* "+N" under a month cell's chips -- the same label the all-day lane uses for
-   its own overflow. Sized and spaced like a chip so the stack stays on the
-   --month-row-h budget: one of these occupies exactly the row a fourth chip
-   would have. */
+/* A day's single "+N", opening its full agenda. buildMonthWeekLayout always puts
+   it in the day's LAST item row, which lies inside the fixed week height, so it
+   is never what overflow clips. */
 .month-more {
   display: block;
   width: 100%;
@@ -319,13 +340,12 @@ body {
   font: inherit;
   font-size: 0.7rem;
   color: var(--text-muted);
-  padding: 1px 5px;
+  padding: 0 5px;
+  line-height: var(--month-slot-h);
   border-radius: 4px;
   cursor: pointer;
-  /* One line, always. Wrapping costs a second row the cell has not budgeted
-     for, which on a 390px phone is what made three chips look cramped even
-     though they technically fitted. Clip rather than wrap if a large count
-     ever runs out of width. */
+  /* One line, always: the week has no second row to wrap into. A very large
+     count is clipped rather than wrapped. */
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -847,14 +867,15 @@ body {
   color: var(--text-muted);
 }
 /* Six week rows, as buildMonthGrid always produces. Written as a sum of six so
-   the row count is literal in the declaration and --month-row-h stays the only
-   source of the row height: change that token and the real grid and this box
-   move together. min-height, not height, because the real month grows past this
-   when a cell overflows. */
+   the row count is literal in the declaration and --month-week-h stays the only
+   source of the row height: the real grid and this box read the same token, and
+   --month-slots reaches both from the same useMonthSlots hook. A week's height
+   no longer depends on its events; what remains is the weekday header and the
+   borders. */
 .calendar-placeholder--month {
   min-height: calc(
-    var(--month-row-h) + var(--month-row-h) + var(--month-row-h) +
-    var(--month-row-h) + var(--month-row-h) + var(--month-row-h)
+    var(--month-week-h) + var(--month-week-h) + var(--month-week-h) +
+    var(--month-week-h) + var(--month-week-h) + var(--month-week-h)
   );
 }
 /* The week/day grid's own height contract, which is data-independent. */
@@ -901,11 +922,10 @@ body {
   .app-main {
     padding: 0.5rem;
   }
-  /* Set on :root, not on .month-week-grid, so the loading placeholder shrinks
-     with the grid it is reserving space for. */
-  :root {
-    --month-row-h: 64px;
-  }
+  /* No month height rule here. The month's row count changes at this same
+     breakpoint, but COMPACT_MONTH_QUERY in TypeScript is what switches it
+     (useMonthSlots), handed to the grid as --month-slots -- there is no second
+     number to keep in step. Here the narrower columns only lose the chip time. */
   .variant-chip .event-chip-time {
     display: none;
   }
