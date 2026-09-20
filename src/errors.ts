@@ -82,6 +82,62 @@ export class WriteRateLimitedError extends Error {
 }
 
 /**
+ * Thrown when anonymous Free/Busy was refused for arriving too fast, or while
+ * the same calendar was already being computed.
+ *
+ * Mirrors the DB's two 0019 markers, and only those:
+ *   'rate'  TIMEWEAVE_RATE_FREEBUSY       the owner's or the link's GCRA budget
+ *                                         is spent. The wait can be tens of
+ *                                         seconds; the HINT carries it.
+ *   'busy'  TIMEWEAVE_RATE_FREEBUSY_BUSY  every one of the owner's concurrency
+ *                                         slots (k, currently 2) was taken by
+ *                                         computations already running. k lives
+ *                                         in the database, so this number is
+ *                                         not a promise the client can keep --
+ *                                         nothing here depends on its value.
+ *                                         Nothing is queued and the slots are
+ *                                         released at commit, so this one
+ *                                         clears in about a second -- which is
+ *                                         exactly what 0019's HINT says.
+ *
+ * WHY 'rate' DOES NOT SAY WHICH BUCKET. 0019 raises the owner refusal and the
+ * link refusal with the SAME detail marker; only their MESSAGE differs, and a
+ * message is prose this codebase never parses. Telling an anonymous viewer
+ * "the owner's budget is spent" would also disclose that OTHER share links of
+ * the same calendar are being used, which the share page must never reveal. So
+ * the two stay one kind on purpose, and separating them would be a database
+ * change, not a client one.
+ *
+ * USER-ACTIONABLE and temporary in both kinds: waiting is the whole remedy, and
+ * a refusal charges nothing (0019 charges at the end of a successful call), so
+ * the same view can simply be re-requested later.
+ *
+ * DO NOT retry automatically. A refusal costs the viewer no budget, but an
+ * automatic retry achieves nothing except hammering the same wall -- and for
+ * 'busy' it would spend the slot the running computations need to finish.
+ */
+export class FreeBusyRateLimitedError extends Error {
+  readonly kind: 'rate' | 'busy';
+  readonly retryAfterSeconds: number | null;
+
+  constructor(
+    kind: 'rate' | 'busy',
+    retryAfterSeconds: number | null = null,
+    message?: string,
+  ) {
+    super(
+      message ??
+        (kind === 'busy'
+          ? `空き時間の計算が混み合っています。${retryAdvice(retryAfterSeconds)}`
+          : `空き時間の取得が短時間に集中したため、一時的に制限しています。${retryAdvice(retryAfterSeconds)}`),
+    );
+    this.name = 'FreeBusyRateLimitedError';
+    this.kind = kind;
+    this.retryAfterSeconds = retryAfterSeconds;
+  }
+}
+
+/**
  * Thrown when an account is at its ceiling for stored events.
  *
  * Mirrors the DB's TIMEWEAVE_QUOTA_EVENTS (migration 0011). USER-ACTIONABLE:

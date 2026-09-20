@@ -2,10 +2,12 @@
  * Anonymous, read-only Free/Busy view for a share token (route /s/:token).
  * Rendered OUTSIDE AuthGate. No clicks, no editing, no event details.
  *
- * Safety: on any fetch error (including the RPC's 92-day 22023) the page shows a
- * failure state — it NEVER falls back to an empty "all free" grid. When the RPC
- * reports complete=false, a prominent warning states that unshown times must not
- * be assumed free.
+ * Safety: on any fetch error (the RPC's 92-day 22023, and 0019's rate-limit and
+ * busy refusals, included) the page shows a failure state — it NEVER falls back
+ * to an empty "all free" grid. The wording comes from freeBusyErrorBanner, which
+ * keeps the "this is not 'no events'" note on every branch. When the RPC reports
+ * complete=false, a prominent warning states that unshown times must not be
+ * assumed free.
  *
  * An empty grid is never left to speak for itself either: `get_free_busy` answers
  * `{ complete: true, slots: [] }` for a revoked, expired or unknown token exactly
@@ -28,10 +30,13 @@ import { addDaysToDateString, formatTime } from '../../utils/datetime';
 import { useCalendarView } from '../../hooks/useCalendarView';
 import { buildWeekDays, weekRange, weekTitle } from '../calendar/weekGrid';
 import { busyForDay, hasNoDisclosedBusy } from './freeBusyLayout';
+import { freeBusyErrorBanner } from './freeBusyBanner';
 
 type Load =
   | { status: 'loading' }
-  | { status: 'error' }
+  // The banner text is resolved once, at the moment of failure, so the render
+  // path stays free of error-shape knowledge.
+  | { status: 'error'; message: string }
   | { status: 'ok'; result: FreeBusyResult };
 
 const WEEKDAY_LABELS = ['月', '火', '水', '木', '金', '土', '日'];
@@ -63,9 +68,11 @@ export function FreeBusyPage({ token }: { token: string }) {
           });
         }
       })
-      .catch(() => {
-        // Includes 22023 and network errors. Do NOT show an empty grid as free.
-        if (!cancelled) setLoad({ status: 'error' });
+      .catch((cause: unknown) => {
+        // Includes 0019's two rate-limit refusals, 22023 and network errors.
+        // Do NOT show an empty grid as free -- freeBusyErrorBanner keeps that
+        // note on every branch.
+        if (!cancelled) setLoad({ status: 'error', message: freeBusyErrorBanner(cause) });
       });
 
     return () => {
@@ -110,10 +117,7 @@ export function FreeBusyPage({ token }: { token: string }) {
       )}
 
       {load.status === 'error' && (
-        <p className="banner error" role="alert">
-          空き時間を取得できませんでした。時間をおいて再読み込みしてください。
-          （この画面は「予定なし」を意味しません）
-        </p>
+        <p className="banner error" role="alert">{load.message}</p>
       )}
 
       {load.status === 'loading' && <p className="freebusy-loading">読み込み中…</p>}

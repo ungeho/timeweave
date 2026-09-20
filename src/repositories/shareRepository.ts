@@ -7,6 +7,7 @@
  */
 
 import { requireSupabase } from '../lib/supabase';
+import { mapFreeBusyError } from './freeBusyError';
 import type {
   CreatedShareLink,
   FreeBusyResult,
@@ -82,6 +83,12 @@ function mapSlot(s: FreeBusySlotDb): FreeBusySlot {
  * instant window (from/to, UTC ISO); all-day events use the date window
  * (fromDate/toDate, "YYYY-MM-DD", half-open) with no timezone conversion. The
  * caller must keep the window within 92 days (the RPC rejects longer).
+ *
+ * Failures go through mapFreeBusyError, so 0019's two rate-limit refusals reach
+ * the page as FreeBusyRateLimitedError instead of a bare message. Everything
+ * else -- the 92-day 22023 included -- still surfaces the server's message
+ * unchanged. The other RPCs in this module keep their plain mapping; their
+ * markers (0011's and 0016's share-link quotas and rate) are a separate change.
  */
 export async function getFreeBusy(
   token: string,
@@ -97,7 +104,7 @@ export async function getFreeBusy(
     p_from_date: fromDate,
     p_to_date: toDate,
   });
-  if (error) throw new Error(error.message);
+  if (error) throw mapFreeBusyError(error);
   const result = (data ?? {}) as { complete?: boolean; slots?: FreeBusySlotDb[] };
   return {
     complete: Boolean(result.complete),

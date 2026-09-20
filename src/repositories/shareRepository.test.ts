@@ -15,6 +15,7 @@ const h = vi.hoisted(() => {
 
 vi.mock('../lib/supabase', () => ({ requireSupabase: () => h.client }));
 
+import { FreeBusyRateLimitedError } from '../errors';
 import {
   createShareLink,
   getFreeBusy,
@@ -123,5 +124,47 @@ describe('getFreeBusy', () => {
   it('propagates the 22023 over-range error', async () => {
     h.state.error = { message: 'requested range exceeds 92 days' };
     await expect(getFreeBusy('t', 'a', 'b', 'c', 'd')).rejects.toThrow(/exceeds 92 days/);
+  });
+});
+
+// 0019. The mapping itself is covered in freeBusyError.test.ts; what matters
+// here is that getFreeBusy routes the PostgrestError through it -- details and
+// hint included -- instead of keeping only the message.
+describe('getFreeBusy: 0019 rate-limit refusals', () => {
+  it('turns the rate marker into FreeBusyRateLimitedError, carrying the hint', async () => {
+    h.state.error = {
+      code: 'PT429',
+      details: 'TIMEWEAVE_RATE_FREEBUSY',
+      hint: 'retry_after_seconds=9',
+      message: 'free/busy rate exceeded for this share link',
+    };
+    const e = await getFreeBusy('t', 'a', 'b', 'c', 'd').catch((x: unknown) => x);
+    expect(e).toBeInstanceOf(FreeBusyRateLimitedError);
+    expect((e as FreeBusyRateLimitedError).kind).toBe('rate');
+    expect((e as FreeBusyRateLimitedError).retryAfterSeconds).toBe(9);
+  });
+
+  it('turns the busy marker into the busy kind', async () => {
+    h.state.error = {
+      code: 'PT429',
+      details: 'TIMEWEAVE_RATE_FREEBUSY_BUSY',
+      hint: 'retry_after_seconds=1',
+      message: 'free/busy is busy for this calendar',
+    };
+    const e = await getFreeBusy('t', 'a', 'b', 'c', 'd').catch((x: unknown) => x);
+    expect(e).toBeInstanceOf(FreeBusyRateLimitedError);
+    expect((e as FreeBusyRateLimitedError).kind).toBe('busy');
+  });
+
+  it('leaves an unknown PT429 as a plain Error with the server message', async () => {
+    h.state.error = { code: 'PT429', details: 'TIMEWEAVE_RATE_SOMETHING_NEW', message: 'refused' };
+    const e = await getFreeBusy('t', 'a', 'b', 'c', 'd').catch((x: unknown) => x);
+    expect(e).not.toBeInstanceOf(FreeBusyRateLimitedError);
+    expect((e as Error).message).toBe('refused');
+  });
+
+  it('still returns data when there is no error', async () => {
+    h.state.data = { complete: true, slots: [] };
+    await expect(getFreeBusy('t', 'a', 'b', 'c', 'd')).resolves.toEqual({ complete: true, slots: [] });
   });
 });
