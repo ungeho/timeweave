@@ -6,6 +6,7 @@ import { buildMonthGrid, type MonthGridCell } from './monthGrid';
 import type { AllDayBand } from './allDayBands';
 import { EventChip, VisibilityIcon } from './EventChip';
 import { visibilityMeta } from './visibilityMeta';
+import { eventDisplayTitle } from './eventTitle';
 import { COMPACT_MONTH_QUERY } from './dayAgenda';
 import { buildMonthWeekLayout, groupMonthOccurrences, monthSlotCount } from './monthWeekLayout';
 
@@ -174,6 +175,7 @@ function MonthBand({
   const { event } = band.occurrence;
   const color = categoryColor(event.category);
   const vis = visibilityMeta[event.visibility];
+  const shownTitle = eventDisplayTitle(event);
   const style = {
     gridColumn: `${band.startIndex + 1} / span ${band.span}`,
     gridRow: band.lane + 2,
@@ -194,12 +196,12 @@ function MonthBand({
         e.stopPropagation();
         onOccurrenceClick(band.occurrence);
       }}
-      title={`${event.title}（${vis.label}）`}
-      aria-label={`${event.title}, ${vis.label}`}
+      title={`${shownTitle}（${vis.label}）`}
+      aria-label={`${shownTitle}, ${vis.label}`}
     >
       {band.continuesLeft && <span className="cont-mark" aria-hidden>‹</span>}
       <VisibilityIcon visibility={event.visibility} />
-      <span className="allday-band-title">{event.title || '(無題)'}</span>
+      <span className="allday-band-title">{shownTitle}</span>
       {band.continuesRight && <span className="cont-mark" aria-hidden>›</span>}
     </button>
   );

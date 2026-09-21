@@ -18,6 +18,23 @@
 
 export type Visibility = 'private' | 'busy_only' | 'public';
 
+/**
+ * Whether the owner can be reached DURING this event. Orthogonal to everything
+ * else on the row: `visibility` says how much of the event a share link may
+ * disclose, `category` says what kind of event it is, and this says only
+ * whether the time is open.
+ *
+ * There is no 'unknown' member, and there must not be one. Unknown is the
+ * absence of a row -- the owner has said nothing about that time -- and a row
+ * that exists has always meant 'busy'. Making Unknown a stored value would
+ * invent a fourth meaning ("there is an event here, but whether you can reach
+ * me is unrecorded") that nothing in the app produces or reads.
+ *
+ * Every row that exists today is 'busy', by that same history: the database
+ * default and every read path below fill it in rather than leaving it open.
+ */
+export type Availability = 'busy' | 'available';
+
 /** A persisted event row (one-off, recurring master, or exception). */
 export interface EventRow {
   id: string;
@@ -26,6 +43,14 @@ export interface EventRow {
   description: string | null;
   category: string | null;
   visibility: Visibility;
+  /**
+   * Always present on a row the app has read, and 'busy' for every row written
+   * so far. It is NOT yet in `NewEvent`, `EventEditInput` or `ExceptionInput`:
+   * the column does not exist in the production database yet, and a write input
+   * that could carry the field is a write payload that could carry the column.
+   * Those arrive with the migration that adds it.
+   */
+  availability: Availability;
 
   allDay: boolean;
 

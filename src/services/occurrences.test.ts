@@ -11,6 +11,7 @@ const base = (over: Partial<EventRow>): EventRow => ({
   description: null,
   category: null,
   visibility: 'private',
+  availability: 'busy',
   allDay: false,
   startAt: new Date(2026, 7, 3, 10).toISOString(),
   endAt: new Date(2026, 7, 3, 11).toISOString(),

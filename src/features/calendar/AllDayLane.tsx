@@ -4,6 +4,7 @@ import { categoryColor } from '../../utils/categoryColor';
 import { buildAllDayBands, MAX_ALL_DAY_LANES } from './allDayBands';
 import { overflowEntries } from './dayAgenda';
 import { visibilityMeta } from './visibilityMeta';
+import { eventDisplayTitle } from './eventTitle';
 import { VisibilityIcon } from './EventChip';
 
 interface Props {
@@ -49,6 +50,7 @@ export function AllDayLane({
       {bands.map((band) => {
         const color = categoryColor(band.occurrence.event.category);
         const vis = visibilityMeta[band.occurrence.event.visibility];
+        const shownTitle = eventDisplayTitle(band.occurrence.event);
         const style = {
           gridColumn: `${band.startIndex + 1} / span ${band.span}`,
           gridRow: band.lane + 1,
@@ -66,12 +68,12 @@ export function AllDayLane({
             ].join(' ').trim()}
             style={style}
             onClick={() => onOccurrenceClick(band.occurrence)}
-            title={`${band.occurrence.event.title}（${vis.label}）`}
-            aria-label={`${band.occurrence.event.title}, ${vis.label}`}
+            title={`${shownTitle}（${vis.label}）`}
+            aria-label={`${shownTitle}, ${vis.label}`}
           >
             {band.continuesLeft && <span className="cont-mark" aria-hidden>‹</span>}
             <VisibilityIcon visibility={band.occurrence.event.visibility} />
-            <span className="allday-band-title">{band.occurrence.event.title || '(無題)'}</span>
+            <span className="allday-band-title">{shownTitle}</span>
             {band.continuesRight && <span className="cont-mark" aria-hidden>›</span>}
           </button>
         );

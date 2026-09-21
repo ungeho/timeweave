@@ -104,6 +104,9 @@ export class LocalStorageEventRepository implements EventRepository {
       description: input.description ?? null,
       category: input.category ?? null,
       visibility: input.visibility ?? 'private',
+      // NewEvent cannot carry this yet -- see EventRow.availability -- so every
+      // row this repository writes is 'busy', which is what it has always been.
+      availability: 'busy',
       ...timeFields,
       rrule: input.rrule ?? null,
       recurrenceId: null,
@@ -166,6 +169,8 @@ export class LocalStorageEventRepository implements EventRepository {
       description: input.description,
       category: input.category,
       visibility: input.visibility,
+      // As in create(): ExceptionInput cannot carry it yet.
+      availability: 'busy',
       allDay: input.allDay,
       startAt: input.startAt,
       endAt: input.endAt,
@@ -191,10 +196,18 @@ export class LocalStorageEventRepository implements EventRepository {
     try {
       const parsed = JSON.parse(raw);
       if (!Array.isArray(parsed)) return [];
-      // Rows written before Phase 5b-2 have no `timezone` key at all. Filling
-      // in null is a read-time shape fix, NOT a backfill: a legacy timed master
-      // stays a legacy timed master (M0) and never acquires a guessed zone.
-      return (parsed as EventRow[]).map((row) => ({ ...row, timezone: row.timezone ?? null }));
+      // Rows written before Phase 5b-2 have no `timezone` key at all, and rows
+      // written before availability existed have no `availability` key either.
+      // Filling both in is a read-time shape fix, NOT a backfill: a legacy timed
+      // master stays a legacy timed master (M0) and never acquires a guessed
+      // zone, and nothing is rewritten to storage on a read.
+      //   'busy' is the right default because it is not a guess: a row that
+      // exists has always meant the time is taken.
+      return (parsed as EventRow[]).map((row) => ({
+        ...row,
+        timezone: row.timezone ?? null,
+        availability: row.availability ?? 'busy',
+      }));
     } catch {
       return [];
     }

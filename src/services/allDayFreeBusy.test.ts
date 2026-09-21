@@ -46,6 +46,7 @@ function row(input: RowInput): EventRow {
     description: null,
     category: null,
     visibility: input.visibility ?? 'busy_only',
+    availability: 'busy',
     allDay,
     startAt: allDay ? null : (input.startAt ?? null),
     endAt: allDay ? null : (input.endAt ?? null),

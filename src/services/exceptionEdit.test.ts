@@ -14,7 +14,7 @@ import {
 function master(over: Partial<EventRow> = {}): EventRow {
   return {
     id: 'm', ownerId: 'u', title: '定例会', description: 'メモ', category: '仕事',
-    visibility: 'busy_only', allDay: false,
+    visibility: 'busy_only', availability: 'busy', allDay: false,
     startAt: '2026-08-24T00:00:00.000Z', endAt: '2026-08-24T01:00:00.000Z',
     startDate: null, endDate: null, rrule: 'FREQ=WEEKLY;BYDAY=MO',
     recurrenceId: null, recurrenceSlotStart: null, recurrenceSlotDate: null,

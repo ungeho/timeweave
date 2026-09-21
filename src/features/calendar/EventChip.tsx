@@ -3,6 +3,7 @@ import type { EventOccurrence, Visibility } from '../../types/event';
 import { formatTime } from '../../utils/datetime';
 import { categoryColor } from '../../utils/categoryColor';
 import { visibilityMeta } from './visibilityMeta';
+import { eventDisplayTitle } from './eventTitle';
 
 type Variant = 'chip' | 'block';
 
@@ -55,6 +56,9 @@ export function EventChip({ occurrence, variant = 'chip', style, onClick }: Prop
   const { event } = occurrence;
   const color = categoryColor(event.category);
   const vis = visibilityMeta[event.visibility];
+  // One value for the visible text, the tooltip and the accessible name, so an
+  // untitled event never announces itself as ", " + a visibility.
+  const shownTitle = eventDisplayTitle(event);
 
   const colorVars = {
     '--cat-bg': color.bg,
@@ -69,12 +73,12 @@ export function EventChip({ occurrence, variant = 'chip', style, onClick }: Prop
       className={`event-chip variant-${variant}`}
       style={colorVars}
       onClick={onClick}
-      title={`${event.title}（${vis.label}）`}
-      aria-label={`${event.title}, ${vis.label}`}
+      title={`${shownTitle}（${vis.label}）`}
+      aria-label={`${shownTitle}, ${vis.label}`}
     >
       {!occurrence.allDay && <span className="event-chip-time">{formatTime(occurrence.start)}</span>}
       <VisibilityIcon visibility={event.visibility} />
-      <span className="event-chip-title">{event.title || '(無題)'}</span>
+      <span className="event-chip-title">{shownTitle}</span>
     </button>
   );
 }
