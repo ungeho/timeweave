@@ -21,6 +21,19 @@
   --today: #fff4e0;
   --shadow: 0 8px 30px rgba(0, 0, 0, 0.12);
 
+  /* The hairline that gives an event its own edge, so a chip whose fill is a
+     neutral surface still reads as a card. Measured against every surface a
+     chip can sit on (cell, hovered cell, today, the time grid) and against the
+     neutral fill itself, it stays at or above WCAG 1.4.11's 3:1 for non-text
+     UI without competing with a category colour: 3.39:1 at its weakest here,
+     against --text-muted's 4.23:1.
+       ROLE SPLIT, kept deliberately: the FILL and the month chip's left bar
+     carry the CATEGORY; this edge only states that an event is there; and
+     --accent, drawn as a thicker inner ring, is reserved for INTERACTION
+     (hover / focus). A future importance flag therefore still has the bar's
+     width, a second icon and font weight to use, and needs none of these. */
+  --chip-edge: #7b828e;
+
   /* calendar layout tokens (theme-independent) */
   --band-h: 20px;
   --gutter-w: 52px;
@@ -63,4 +76,6 @@
   --warn-border: #7a5f16;
   --today: #33291a;
   --shadow: 0 8px 30px rgba(0, 0, 0, 0.5);
+  /* 3.73:1 at its weakest against the dark surfaces, by the same measurement. */
+  --chip-edge: #7c838f;
 }

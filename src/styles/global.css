@@ -174,8 +174,11 @@ body {
 .month-cell:nth-child(7) {
   border-right: none;
 }
+/* NOT --bg-muted: that is the fill an uncategorised chip uses, so hovering a
+   day used to repaint the cell in exactly the chip's colour and the chips in it
+   disappeared (1.00:1). --bg-elevated keeps the cell distinct from both. */
 .month-cell:hover {
-  background: var(--bg-muted);
+  background: var(--bg-elevated);
 }
 .month-cell.muted {
   color: var(--text-muted);
@@ -223,16 +226,25 @@ body {
   white-space: nowrap;
   color: var(--text);
   background: transparent;
+  /* utils/categoryColor.ts gives an UNCATEGORISED event `var(--border)` as its
+     border colour, and that variable resolves in this element's scope. Pointing
+     it at --chip-edge here is what makes such an event visible, and it reaches
+     nothing else: a categorised event carries a literal hsl() in --cat-border,
+     and no descendant of a chip reads --border. The palette module stays as it
+     is. */
+  --border: var(--chip-edge);
 }
-.event-chip:hover {
-  filter: brightness(0.96);
-}
-/* Month cell chip: category color as a left accent bar. */
+/* Month cell chip: category color as a left accent bar, plus an edge so the
+   chip is a card rather than a tint of whatever it sits on. */
 .event-chip.variant-chip {
   background: var(--bg-muted);
   border-left: 3px solid var(--cat-border);
+  box-shadow: inset 0 0 0 1px var(--cat-border);
 }
-/* Week/day time-grid block: filled with the category color. */
+/* Week/day time-grid block: filled with the category color. The edge was an
+   OUTER ring in --bg-elevated, i.e. the grid's own colour (1.07:1) -- it fell
+   back to nothing on an uncategorised block. Inset, in the category's own
+   shade, it separates neighbouring blocks and outlines a neutral one. */
 .event-chip.variant-block {
   flex-wrap: wrap;
   align-items: flex-start;
@@ -242,7 +254,7 @@ body {
   min-height: 14px;
   line-height: 1.15;
   padding: 1px 4px;
-  box-shadow: 0 0 0 1px var(--bg-elevated);
+  box-shadow: inset 0 0 0 1px var(--cat-border);
 }
 .event-chip .vis-icon {
   flex: 0 0 auto;
@@ -283,6 +295,11 @@ body {
   cursor: pointer;
   overflow: hidden;
   white-space: nowrap;
+  /* MonthBand and AllDayLane hand over --cat-bg and --cat-fg only, never
+     --cat-border, so the edge is the neutral hairline for every band. It is
+     what an uncategorised band needs; on a category fill it reads as a rule
+     around the block and leaves the fill to carry the category. */
+  box-shadow: inset 0 0 0 1px var(--chip-edge);
 }
 .allday-band.cont-left {
   border-top-left-radius: 0;
@@ -299,6 +316,40 @@ body {
 .allday-band-title {
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* ---------- event: pointed at, or focused ----------
+   One ring for both states, on every surface an event is drawn on: month chips,
+   time-grid blocks, all-day bands in the month and in the week/day header, and
+   the same chips inside the day dialog. It replaces filter: brightness(0.96),
+   which moved a light chip by 1.10:1 and a dark one by 1.02:1 -- and moved the
+   dark one TOWARDS the page background, so hovering made it recede.
+
+   Why INSET, and why not an outline:
+     * .month-week and .timegrid are overflow: hidden, and a month chip is
+       exactly one 18px row tall with 2px of side margin, so anything drawn
+       outside the box is clipped at the week's edge or bleeds into the next row;
+     * an inset shadow is clipped to the padding box, so it leaves the month
+       chip's 3px category bar showing -- the interaction state never paints
+       over the category;
+     * neither one changes layout, so no row, lane or column moves.
+
+   These rules follow the variant rules above on purpose: same specificity, so
+   source order is what lets the 2px ring replace the 1px edge while active. */
+.event-chip:hover,
+.event-chip:focus-visible,
+.allday-band:hover,
+.allday-band:focus-visible {
+  box-shadow: inset 0 0 0 2px var(--accent);
+}
+/* The transparent outline is not decoration: in forced-colors mode the browser
+   drops box-shadow and repaints an outline in a system colour, so this is what
+   keeps the focused event visible there. It also suppresses the UA ring, which
+   would otherwise be the one thing here that overflow: hidden can clip. */
+.event-chip:focus-visible,
+.allday-band:focus-visible {
+  outline: 2px solid transparent;
+  outline-offset: -2px;
 }
 .cont-mark {
   flex: 0 0 auto;
