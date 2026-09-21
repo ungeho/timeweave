@@ -234,10 +234,16 @@ body {
      is. */
   --border: var(--chip-edge);
 }
-/* Month cell chip: category color as a left accent bar, plus an edge so the
-   chip is a card rather than a tint of whatever it sits on. */
+/* Month cell chip (and the same chip in the day dialog): category color as a
+   left accent bar, plus an edge so the chip is a card rather than a tint of
+   whatever it sits on, plus a --chip-tint share of the category in the fill so
+   the category is legible without reading the bar.
+     The mix resolves to --bg-muted untouched for an UNCATEGORISED event, since
+   categoryColor.ts gives it the literal var(--bg-muted) as --cat-bg -- the same
+   scoping property the --border line above relies on. No second rule, no
+   :not(), and the neutral case cannot drift away from the neutral surface. */
 .event-chip.variant-chip {
-  background: var(--bg-muted);
+  background: color-mix(in oklab, var(--cat-bg) var(--chip-tint), var(--bg-muted));
   border-left: 3px solid var(--cat-border);
   box-shadow: inset 0 0 0 1px var(--cat-border);
 }
@@ -263,6 +269,11 @@ body {
 .event-chip-time {
   color: var(--text-muted);
   font-variant-numeric: tabular-nums;
+}
+/* The tinted fill is darker than --bg-muted in light, and --text-muted was
+   already only 4.23:1 there. See --chip-time in theme.css. */
+.variant-chip .event-chip-time {
+  color: var(--chip-time);
 }
 .variant-block .event-chip-time {
   color: inherit;

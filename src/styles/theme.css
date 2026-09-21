@@ -34,6 +34,26 @@
      width, a second icon and font weight to use, and needs none of these. */
   --chip-edge: #7b828e;
 
+  /* How much of an event's category colour is mixed into a month chip's fill,
+     and the time colour that keeps its 12px label readable once it is.
+       WHY A TINT AT ALL: a month chip carried its category only in the 3px bar
+     and the 1px edge; the fill was --bg-muted, i.e. exactly what an
+     UNCATEGORISED chip gets, so a month of events showed no category at a
+     glance. An UNCATEGORISED chip still gets exactly that, with no rule of its
+     own: categoryColor.ts hands it the literal var(--bg-muted) as --cat-bg, so
+     the mix is --bg-muted into --bg-muted and comes back unchanged.
+       WHY 12 HERE AND 15 IN DARK: the ceiling is the --accent hover/focus ring,
+     which has to stay at 3:1 over the tinted fill. Measured across all 360
+     hues, it breaks at 15% in light and at 25% in dark, so light has less room
+     and takes the smaller share. At these values the ring holds at 3.14:1
+     (light) and 3.56:1 (dark), and the tint is 0.033-0.071 dE(OKLab) away from
+     the neutral fill -- comfortably visible, well short of a coloured block.
+       --chip-time is not --text-muted: that was already 4.23:1 on the neutral
+     fill, under AA for 12px text, and tinting takes it to 3.44:1. This value
+     is 4.52:1 against the darkest tint any hue produces. */
+  --chip-tint: 12%;
+  --chip-time: #5c626d;
+
   /* calendar layout tokens (theme-independent) */
   --band-h: 20px;
   --gutter-w: 52px;
@@ -78,4 +98,9 @@
   --shadow: 0 8px 30px rgba(0, 0, 0, 0.5);
   /* 3.73:1 at its weakest against the dark surfaces, by the same measurement. */
   --chip-edge: #7c838f;
+  /* More room here: the ring holds to 24%, so a larger share still leaves it at
+     3.56:1. The time keeps --text-muted's value, which stays at 4.51:1 over the
+     tint -- it is the light theme that needed a darker one. */
+  --chip-tint: 15%;
+  --chip-time: #9aa0aa;
 }
