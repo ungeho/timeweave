@@ -21,6 +21,7 @@ import {
   EventQuotaExceededError,
   ExceptionQuotaExceededError,
   InvalidTimezoneError,
+  RecurrenceGraphViolationError,
   TimezoneClearedError,
   TimezoneRequiredError,
   WriteRateLimitedError,
@@ -120,6 +121,11 @@ export function mapEventWriteError(error: WriteErrorLike): Error {
       return new EventQuotaExceededError();
     case 'TIMEWEAVE_QUOTA_EXCEPTIONS':
       return new ExceptionQuotaExceededError();
+    // 0017. Not user-actionable: seriesGuards already blocks the edit that
+    // could break the graph, so reaching this means a guard did not hold. The
+    // DB message counts offending rows; the class says none of that.
+    case 'TIMEWEAVE_RECURRENCE_GRAPH':
+      return new RecurrenceGraphViolationError();
     default:
       return new Error(error.message ?? 'Unknown database error');
   }

@@ -15,7 +15,12 @@ const h = vi.hoisted(() => {
 
 vi.mock('../lib/supabase', () => ({ requireSupabase: () => h.client }));
 
-import { FreeBusyRateLimitedError } from '../errors';
+import {
+  FreeBusyRateLimitedError,
+  ShareLinkActiveQuotaExceededError,
+  ShareLinkRateLimitedError,
+  ShareLinkTotalQuotaExceededError,
+} from '../errors';
 import {
   createShareLink,
   getFreeBusy,
@@ -55,6 +60,48 @@ describe('createShareLink', () => {
   it('throws on RPC error', async () => {
     h.state.error = { message: 'authentication required' };
     await expect(createShareLink()).rejects.toThrow(/authentication required/);
+  });
+
+  // 0016. The mapping itself is covered in shareLinkError.test.ts; what matters
+  // here is that createShareLink routes the PostgrestError through it -- details
+  // and hint included -- instead of keeping only the message, which carries the
+  // owner's UUID.
+  it('maps the active-quota marker and drops the owner id from the message', async () => {
+    const owner = 'aa39f01f-e076-47a1-915c-e92a963c2efb';
+    h.state.error = {
+      code: '23514',
+      details: 'TIMEWEAVE_QUOTA_SHARE_LINKS_ACTIVE',
+      hint: 'Revoke an existing share link to free an active slot.',
+      message: `share link quota exceeded: owner ${owner} would hold 26 active links, limit is 25`,
+    };
+    const e = await createShareLink().catch((x: unknown) => x);
+    expect(e).toBeInstanceOf(ShareLinkActiveQuotaExceededError);
+    expect((e as Error).message).not.toContain(owner);
+  });
+
+  it('maps the total-quota marker', async () => {
+    h.state.error = { code: '23514', details: 'TIMEWEAVE_QUOTA_SHARE_LINKS_TOTAL', message: 'quota' };
+    const e = await createShareLink().catch((x: unknown) => x);
+    expect(e).toBeInstanceOf(ShareLinkTotalQuotaExceededError);
+  });
+
+  it('maps the create-rate marker and carries the hint', async () => {
+    h.state.error = {
+      code: 'PT429',
+      details: 'TIMEWEAVE_RATE_SHARE_LINKS',
+      hint: 'retry_after_seconds=9',
+      message: 'share link create rate exceeded: owner x is ... per link',
+    };
+    const e = await createShareLink().catch((x: unknown) => x);
+    expect(e).toBeInstanceOf(ShareLinkRateLimitedError);
+    expect((e as ShareLinkRateLimitedError).retryAfterSeconds).toBe(9);
+  });
+
+  it('leaves an unknown 23514 as a plain Error with the server message', async () => {
+    h.state.error = { code: '23514', details: 'TIMEWEAVE_SOMETHING_NEW', message: 'refused' };
+    const e = await createShareLink().catch((x: unknown) => x);
+    expect(e).not.toBeInstanceOf(ShareLinkActiveQuotaExceededError);
+    expect((e as Error).message).toBe('refused');
   });
 });
 

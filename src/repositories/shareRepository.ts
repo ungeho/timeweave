@@ -8,6 +8,7 @@
 
 import { requireSupabase } from '../lib/supabase';
 import { mapFreeBusyError } from './freeBusyError';
+import { mapShareLinkError } from './shareLinkError';
 import type {
   CreatedShareLink,
   FreeBusyResult,
@@ -42,13 +43,23 @@ export interface CreateShareLinkInput {
   expiresAt?: string | null;
 }
 
+/**
+ * Failures go through mapShareLinkError, so 0016's two quota refusals and its
+ * create-rate refusal reach the dialog as domain errors instead of the server's
+ * message -- which formats the owner's UUID and the configured ceilings into
+ * its text. Everything else still surfaces that message unchanged.
+ *
+ * Only this RPC needs it: 0016's quota trigger checks only owners whose count
+ * RISES, so revoke (an UPDATE that lowers) and list cannot raise those refusals,
+ * and the create-rate trigger is INSERT-only.
+ */
 export async function createShareLink(input: CreateShareLinkInput = {}): Promise<CreatedShareLink> {
   const { data, error } = await requireSupabase().rpc('create_share_link', {
     p_label: input.label ?? null,
     p_include_private: input.includePrivate ?? true,
     p_expires_at: input.expiresAt ?? null,
   });
-  if (error) throw new Error(error.message);
+  if (error) throw mapShareLinkError(error);
   // Returns a single-row table.
   const row = (Array.isArray(data) ? data[0] : data) as (ShareLinkDbRow & { token: string }) | undefined;
   if (!row) throw new Error('create_share_link returned no row');

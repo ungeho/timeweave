@@ -4,6 +4,7 @@ import {
   EventQuotaExceededError,
   ExceptionQuotaExceededError,
   InvalidTimezoneError,
+  RecurrenceGraphViolationError,
   TimezoneClearedError,
   TimezoneRequiredError,
   WriteRateLimitedError,
@@ -79,6 +80,33 @@ describe('mapEventWriteError: quota tokens (0011)', () => {
     for (const details of ['TIMEWEAVE_QUOTA_EVENTS', 'TIMEWEAVE_QUOTA_EXCEPTIONS']) {
       expect(mapEventWriteError({ code: '23514', details }).message).not.toMatch(/\d/);
     }
+  });
+});
+
+describe('mapEventWriteError: recurrence graph token (0017)', () => {
+  const graph = () => mapEventWriteError({
+    code: '23514',
+    details: 'TIMEWEAVE_RECURRENCE_GRAPH',
+    hint: 'An exception must belong to a recurring master, and a master with exceptions must remain one.',
+    message: 'recurrence graph violated: 3 exception row(s) would not belong to a recurring master of the same all-day kind',
+  });
+
+  it('maps TIMEWEAVE_RECURRENCE_GRAPH to RecurrenceGraphViolationError', () => {
+    expect(graph()).toBeInstanceOf(RecurrenceGraphViolationError);
+    expect(graph().name).toBe('RecurrenceGraphViolationError');
+  });
+
+  // Not user-actionable: no graph, no master, no row count, no offer of a fix.
+  it('exposes none of the database internals', () => {
+    const m = graph().message;
+    expect(m).toBe('予定を保存できませんでした。操作をやり直してください。');
+    expect(m).not.toMatch(/\d/);
+    expect(m).not.toMatch(/recurrence|graph|master|exception/i);
+  });
+
+  it('is not reached by 23514 alone', () => {
+    expect(mapEventWriteError({ code: '23514', details: 'TIMEWEAVE_GRAPH_SOMETHING_NEW', message: 'nope' }))
+      .not.toBeInstanceOf(RecurrenceGraphViolationError);
   });
 });
 

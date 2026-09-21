@@ -138,6 +138,91 @@ export class FreeBusyRateLimitedError extends Error {
 }
 
 /**
+ * Thrown when share links were refused for being created too fast.
+ *
+ * Mirrors the DB's TIMEWEAVE_RATE_SHARE_LINKS (migration 0016), which reuses
+ * 0012's limiter keyed to its own state table. USER-ACTIONABLE and temporary:
+ * the bucket refills continuously, and a refused INSERT rolls its own charge
+ * back, so the same creation can simply be repeated later.
+ *
+ * `retryAfterSeconds` is whatever the database's HINT carried, or null when it
+ * carried nothing usable -- the same best-effort contract the write and
+ * Free/Busy limiters use.
+ *
+ * DO NOT retry automatically: a refusal costs the owner no budget, but retrying
+ * on their behalf only hammers the same wall.
+ */
+export class ShareLinkRateLimitedError extends Error {
+  readonly retryAfterSeconds: number | null;
+
+  constructor(retryAfterSeconds: number | null = null, message?: string) {
+    super(
+      message ??
+        `共有リンクの作成が短時間に集中したため、一時的に制限しています。${retryAdvice(retryAfterSeconds)}`,
+    );
+    this.name = 'ShareLinkRateLimitedError';
+    this.retryAfterSeconds = retryAfterSeconds;
+  }
+}
+
+/**
+ * Thrown when an account already holds as many ACTIVE share links as it may.
+ *
+ * Mirrors the DB's TIMEWEAVE_QUOTA_SHARE_LINKS_ACTIVE (migration 0016).
+ * USER-ACTIONABLE: 0016's quota is a delta rule, so an owner at the ceiling can
+ * still revoke -- and revoking is exactly what frees an active slot, which is
+ * why this message can name a remedy the UI actually offers.
+ *
+ * The ceiling itself is deliberately absent from the message: the database owns
+ * it (share_links_max_active_per_owner()), and repeating the number here would
+ * create a second copy that can drift.
+ */
+export class ShareLinkActiveQuotaExceededError extends Error {
+  constructor(message = '有効な共有リンクの数が上限に達しました。不要なリンクを失効させてから、もう一度お試しください') {
+    super(message);
+    this.name = 'ShareLinkActiveQuotaExceededError';
+  }
+}
+
+/**
+ * Thrown when an account holds as many share links IN TOTAL as it may, counting
+ * revoked ones.
+ *
+ * Mirrors the DB's TIMEWEAVE_QUOTA_SHARE_LINKS_TOTAL (migration 0016). The
+ * database's own HINT says to DELETE revoked links, and warns that revoking
+ * alone does not help -- but this application has no delete action today
+ * (delete_share_link exists in 0015 and is not called from the UI). So the
+ * message states the fact and stops there, rather than asking for an operation
+ * the user cannot perform here. The one thing it does say is what will NOT work,
+ * because "just revoke one" is the obvious wrong guess and costs a link.
+ */
+export class ShareLinkTotalQuotaExceededError extends Error {
+  constructor(message = '共有リンクの総数が上限に達したため、新しいリンクを作成できません（リンクを失効させても総数は減りません）') {
+    super(message);
+    this.name = 'ShareLinkTotalQuotaExceededError';
+  }
+}
+
+/**
+ * Thrown when a write would break the recurrence graph: an exception row that
+ * does not belong to a recurring master of the same all-day kind, or a master
+ * with exceptions that would stop being one.
+ *
+ * Mirrors the DB's TIMEWEAVE_RECURRENCE_GRAPH (migration 0017). Reaching this
+ * from the UI means a guard did not hold -- seriesGuards already blocks the
+ * "edit all" that could produce it -- so it is an application bug, not
+ * something the user can fix. The message therefore says only that the save
+ * failed: naming the graph, the master or the exception count would expose
+ * internals without giving the user anything to act on.
+ */
+export class RecurrenceGraphViolationError extends Error {
+  constructor(message = '予定を保存できませんでした。操作をやり直してください。') {
+    super(message);
+    this.name = 'RecurrenceGraphViolationError';
+  }
+}
+
+/**
  * Thrown when an account is at its ceiling for stored events.
  *
  * Mirrors the DB's TIMEWEAVE_QUOTA_EVENTS (migration 0011). USER-ACTIONABLE:
