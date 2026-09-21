@@ -16,11 +16,9 @@ export interface EventDbRow {
   category: string | null;
   visibility: EventRow['visibility'];
   /**
-   * OPTIONAL on purpose: the column does not exist in the production database
-   * yet, so `select('*')` returns rows without the key and this type has to be
-   * able to say so. It also keeps the field out of `EventInsert` (derived from
-   * this interface), which is what stops an INSERT from naming a column the
-   * server has never heard of.
+   * OPTIONAL on purpose: a row written before the column existed comes back
+   * without the key, and this type has to be able to say so. Writes do NOT
+   * inherit that optionality -- see EventInsert.
    */
   availability?: Availability;
   all_day: boolean;
@@ -46,9 +44,8 @@ export function rowToEvent(row: EventDbRow): EventRow {
     description: row.description,
     category: row.category,
     visibility: row.visibility,
-    // A row from a database that has no such column yet, exactly like the
-    // localStorage shape fix. It is a read-time default, NOT a backfill: no
-    // write path sends this field, so nothing is being recorded here.
+    // A row written before the column existed, exactly like the localStorage
+    // shape fix. A read-time default, never written back by the act of reading.
     availability: row.availability ?? 'busy',
     allDay: row.all_day,
     startAt: row.start_at,
@@ -69,14 +66,14 @@ export function rowToEvent(row: EventDbRow): EventRow {
 /**
  * Columns for an INSERT. owner_id/id/timestamps are set by DB defaults.
  *
- * `availability` is optional here because it is optional on EventDbRow, and
- * neither builder below sets it. Both facts are load-bearing until the column
- * exists: a key that is never written is a column that is never named.
+ * `availability` is narrowed back to REQUIRED here. Reading tolerates a row
+ * that predates the column; writing one that omits it would leave the decision
+ * to a database default, and this app would rather state it.
  */
 export type EventInsert = Omit<
   EventDbRow,
   'id' | 'owner_id' | 'created_at' | 'updated_at'
->;
+> & { availability: Availability };
 
 /**
  * Build INSERT columns from create input, honouring the all-day discriminant.
@@ -92,6 +89,8 @@ export function eventToInsert(input: NewEvent): EventInsert {
     description: input.description ?? null,
     category: input.category ?? null,
     visibility: input.visibility ?? 'private',
+    // Absent means 'busy', exactly as absent visibility means 'private'.
+    availability: input.availability ?? 'busy',
     rrule: input.rrule ?? null,
     recurrence_id: null,
     recurrence_slot_start: null,
@@ -140,6 +139,7 @@ export function exceptionToInsert(input: ExceptionInput): EventInsert {
     description: input.description,
     category: input.category,
     visibility: input.visibility,
+    availability: input.availability,
     all_day: input.allDay,
     start_at: input.startAt,
     end_at: input.endAt,
@@ -160,10 +160,6 @@ const FIELD_TO_COLUMN: Record<keyof EventRow, keyof EventDbRow> = {
   description: 'description',
   category: 'category',
   visibility: 'visibility',
-  // Required here only because this map is Record<keyof EventRow, ...>, which
-  // is the guardrail that makes a new field impossible to forget. It is reached
-  // only for keys a patch actually carries, and no patch carries this one yet
-  // (rowPatchFromEdit / exceptionPatchFromEdit build their fields explicitly).
   availability: 'availability',
   allDay: 'all_day',
   startAt: 'start_at',

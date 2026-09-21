@@ -23,6 +23,7 @@ const input: ExceptionInput = {
   startAt: '2026-08-31T06:00:00.000Z', endAt: '2026-08-31T07:00:00.000Z',
   startDate: null, endDate: null,
   title: '個別変更', description: null, category: null, visibility: 'private',
+  availability: 'busy',
 };
 
 describe('SupabaseEventRepository.createException', () => {

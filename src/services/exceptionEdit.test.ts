@@ -69,7 +69,10 @@ describe('buildCancellation', () => {
       title: '', description: null, category: null,
       // visibility IS still the master's: get_free_busy reads it on exception
       // rows, cancelled ones included, when judging whether a window is complete.
+      // availability is copied for the same reason -- a tombstone of an
+      // available series must not claim the series was busy.
       visibility: 'busy_only',
+      availability: 'busy',
     });
   });
 
@@ -100,6 +103,8 @@ describe('buildException', () => {
       endAt: '2026-08-31T07:00:00.000Z',
       startDate: null, endDate: null,
       title: '定例会（変更）', description: null, category: '仕事', visibility: 'private',
+      // Unspecified on the edit, so it defaults exactly as visibility does.
+      availability: 'busy',
     });
   });
 
@@ -130,6 +135,7 @@ describe('rowPatchFromEdit — content', () => {
   it('carries the rrule and timed fields, clearing all-day columns', () => {
     expect(rowPatchFromEdit(master(), timedSeriesEdit)).toEqual({
       title: '定例会（改）', description: null, category: '仕事', visibility: 'public',
+      availability: 'busy',
       rrule: 'FREQ=WEEKLY;BYDAY=TU',
       allDay: false, startAt: '2026-08-24T02:00:00.000Z', endAt: '2026-08-24T03:00:00.000Z',
       startDate: null, endDate: null,
@@ -284,6 +290,7 @@ describe('exceptionPatchFromEdit', () => {
     const patch = exceptionPatchFromEdit(occ, edited);
     expect(patch).toEqual({
       title: '個別変更', description: 'x', category: null, visibility: 'private',
+      availability: 'busy',
       isCancelled: false,
       allDay: false, startAt: '2026-08-31T05:00:00.000Z', endAt: '2026-08-31T06:00:00.000Z',
       startDate: null, endDate: null,
@@ -297,5 +304,97 @@ describe('exceptionPatchFromEdit', () => {
     const occ = timedOcc(master(), '2026-08-31T00:00:00.000Z', '2026-08-31T01:00:00.000Z');
     const edited: EventEditInput = { title: 'x', allDay: true, startDate: '2026-08-31', endDate: '2026-09-01' };
     expect(() => exceptionPatchFromEdit(occ, edited)).toThrow(/all-day/);
+  });
+});
+
+/**
+ * How availability travels through the recurrence model. The point of these is
+ * that NO new model was needed: a per-occurrence override is an exception row,
+ * and availability rides on it exactly as title and visibility already do.
+ */
+describe('availability through exceptions', () => {
+  const availableMaster = (over: Partial<EventRow> = {}) =>
+    master({ availability: 'available', ...over });
+
+  const edit = (over: Partial<EventEditInput> = {}): EventEditInput => ({
+    title: '変更後',
+    description: null,
+    category: null,
+    visibility: 'private',
+    allDay: false,
+    startAt: '2026-08-31T02:00:00.000Z',
+    endAt: '2026-08-31T03:00:00.000Z',
+    ...over,
+  } as EventEditInput);
+
+  const occ = (m: EventRow) =>
+    timedOcc(m, '2026-08-31T00:00:00.000Z', '2026-08-31T01:00:00.000Z');
+
+  it('turns one occurrence of an AVAILABLE series busy', () => {
+    const ex = buildException(occ(availableMaster()), edit({ availability: 'busy' }));
+    expect(ex.availability).toBe('busy');
+  });
+
+  it('turns one occurrence of a BUSY series available', () => {
+    const ex = buildException(occ(master()), edit({ availability: 'available', title: '' }));
+    expect(ex.availability).toBe('available');
+    // The empty title survives as the empty string; no label is invented here.
+    expect(ex.title).toBe('');
+  });
+
+  it('defaults an edit that says nothing to busy', () => {
+    // Backward compatibility: every caller that predates the field still writes
+    // what the app has always written.
+    expect(buildException(occ(master()), edit()).availability).toBe('busy');
+  });
+
+  it('leaves the master alone when one occurrence is overridden', () => {
+    const m = availableMaster();
+    buildException(occ(m), edit({ availability: 'busy' }));
+    expect(m.availability).toBe('available');
+  });
+
+  it('copies the master value onto a cancellation tombstone', () => {
+    // Not 'busy': a cancelled occurrence of an available series still belongs to
+    // that series, and visibility is copied for the same reason.
+    expect(buildCancellation(occ(availableMaster())).availability).toBe('available');
+    expect(buildCancellation(occ(master())).availability).toBe('busy');
+  });
+
+  it('copies it onto an all-day cancellation too', () => {
+    const allDayAvailable = availableMaster({
+      allDay: true, startAt: null, endAt: null,
+      startDate: '2026-08-24', endDate: '2026-08-25', timezone: null,
+    });
+    expect(buildCancellation(allDayOcc(allDayAvailable, '2026-08-31')).availability)
+      .toBe('available');
+  });
+
+  it('carries it on a whole-row patch, and defaults to busy', () => {
+    expect(rowPatchFromEdit(oneOff(), edit({ availability: 'available' })).availability)
+      .toBe('available');
+    expect(rowPatchFromEdit(oneOff(), edit()).availability).toBe('busy');
+  });
+
+  it('carries it when editing an exception row in place', () => {
+    const exRow = master({ id: 'e', rrule: null, recurrenceId: 'm' });
+    expect(exceptionPatchFromEdit(occ(exRow), edit({ availability: 'available' })).availability)
+      .toBe('available');
+    expect(exceptionPatchFromEdit(occ(exRow), edit()).availability).toBe('busy');
+  });
+
+  it('allows an all-day available event with no title', () => {
+    const m = availableMaster({
+      allDay: true, startAt: null, endAt: null,
+      startDate: '2026-08-24', endDate: '2026-08-25', timezone: null,
+    });
+    const patch = rowPatchFromEdit(m, {
+      title: '', description: null, category: null, visibility: 'private',
+      availability: 'available', allDay: true,
+      startDate: '2026-08-31', endDate: '2026-09-01',
+    });
+    expect(patch.availability).toBe('available');
+    expect(patch.title).toBe('');
+    expect(patch.allDay).toBe(true);
   });
 });

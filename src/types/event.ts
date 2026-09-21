@@ -44,11 +44,8 @@ export interface EventRow {
   category: string | null;
   visibility: Visibility;
   /**
-   * Always present on a row the app has read, and 'busy' for every row written
-   * so far. It is NOT yet in `NewEvent`, `EventEditInput` or `ExceptionInput`:
-   * the column does not exist in the production database yet, and a write input
-   * that could carry the field is a write payload that could carry the column.
-   * Those arrive with the migration that adds it.
+   * Always present on a row the app has read. Rows written before the column
+   * existed read as 'busy' (see rowToEvent and the localStorage shape fix).
    */
   availability: Availability;
 
@@ -99,6 +96,18 @@ interface EventContent {
   description?: string | null;
   category?: string | null;
   visibility?: Visibility;
+  /**
+   * Optional for the same reason `visibility` is: every consumer resolves it
+   * with `?? 'busy'`, so a caller that does not care about availability writes
+   * the value the app has always written, and no existing call site changes.
+   *
+   * `title` stays required in this type even though an AVAILABLE event may
+   * legitimately have none. The empty string is what such an event stores --
+   * the rule is "may be empty", not "may be absent" -- and making the field
+   * optional would let a caller omit it and get `undefined` into a NOT NULL
+   * column. The dialog's validation is what knows when empty is allowed.
+   */
+  availability?: Availability;
 }
 
 /**
@@ -207,6 +216,13 @@ export interface ExceptionInput {
   description: string | null;
   category: string | null;
   visibility: Visibility;
+  /**
+   * REQUIRED here, unlike on EventContent, and for the same reason `visibility`
+   * is: this type is built only by buildException and buildCancellation, which
+   * both know exactly what the row should say. A default would let one of them
+   * silently drop the master's value.
+   */
+  availability: Availability;
 }
 
 /**

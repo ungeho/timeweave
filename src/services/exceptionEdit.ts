@@ -49,6 +49,12 @@ export function occurrenceSlot(occ: EventOccurrence): {
  * `visibility` IS still copied, and deliberately: `get_free_busy` reads it on
  * exception rows (cancelled ones included) when deciding whether a window is
  * complete. Blanking it would change what the share page reports.
+ *
+ * `availability` is copied for the same reason and by the same argument. A
+ * tombstone has no content, but it is still a row of THIS series, and a future
+ * free/busy pass that filters on availability would read it. Defaulting it to
+ * 'busy' would quietly make a cancelled occurrence of an AVAILABLE series say
+ * the opposite of the series it belongs to.
  */
 export function buildCancellation(occ: EventOccurrence): ExceptionInput {
   const master = occ.event;
@@ -72,6 +78,7 @@ export function buildCancellation(occ: EventOccurrence): ExceptionInput {
     description: null,
     category: null,
     visibility: master.visibility,
+    availability: master.availability,
   };
 }
 
@@ -106,6 +113,10 @@ export function buildException(occ: EventOccurrence, edited: EventEditInput): Ex
     description: edited.description ?? null,
     category: edited.category ?? null,
     visibility: edited.visibility ?? 'private',
+    // This is how one occurrence of a BUSY series becomes available, or one
+    // occurrence of an available series becomes busy: the exception snapshot
+    // carries its own value and the master keeps its own.
+    availability: edited.availability ?? 'busy',
   };
 }
 
@@ -152,6 +163,7 @@ export function rowPatchFromEdit(
     description: edited.description ?? null,
     category: edited.category ?? null,
     visibility: edited.visibility ?? 'private',
+    availability: edited.availability ?? 'busy',
     rrule: edited.rrule ?? null,
   };
   const base: Partial<EventRow> = edited.allDay
@@ -212,6 +224,7 @@ export function exceptionPatchFromEdit(
     description: edited.description ?? null,
     category: edited.category ?? null,
     visibility: edited.visibility ?? 'private',
+    availability: edited.availability ?? 'busy',
     isCancelled: false,
   };
   return edited.allDay

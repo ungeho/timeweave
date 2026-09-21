@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from 'vitest';
-import type { ExceptionInput, NewEvent } from '../types/event';
+import type { Availability, ExceptionInput, NewEvent } from '../types/event';
 import { DuplicateExceptionError } from '../errors';
 import { LocalStorageEventRepository } from './eventRepository';
 
@@ -30,6 +30,7 @@ const exceptionInput = (recurrenceId: string): ExceptionInput => ({
   startAt: '2026-08-31T06:00:00.000Z', endAt: '2026-08-31T07:00:00.000Z',
   startDate: null, endDate: null,
   title: '個別変更', description: null, category: null, visibility: 'private',
+  availability: 'busy',
 });
 
 describe('LocalStorageEventRepository.remove (cascade)', () => {
@@ -137,5 +138,124 @@ describe('LocalStorageEventRepository: rows written before availability existed'
     expect(master.availability).toBe('busy');
     const ex = await repo.createException(exceptionInput(master.id));
     expect(ex.availability).toBe('busy');
+  });
+});
+
+/**
+ * Creating and editing availability in local mode, which is the only mode this
+ * commit can actually run in: the production database has no column yet.
+ */
+describe('LocalStorageEventRepository: availability', () => {
+  /** A timed one-off. Only the fields these tests vary are overridable, which
+   *  keeps the result narrowed to one arm of NewEvent without a cast. */
+  const timed = (
+    over: { title?: string; startAt?: string; endAt?: string; availability?: Availability } = {},
+  ): NewEvent => ({
+    title: '定例会', allDay: false,
+    startAt: '2026-08-24T00:00:00.000Z', endAt: '2026-08-24T01:00:00.000Z',
+    ...over,
+  });
+
+  it('defaults a create that says nothing to busy', async () => {
+    const row = await new LocalStorageEventRepository().create(timed());
+    expect(row.availability).toBe('busy');
+  });
+
+  it('stores an available event, with its empty title kept empty', async () => {
+    const repo = new LocalStorageEventRepository();
+    const row = await repo.create(timed({ title: '', availability: 'available' }));
+    expect(row.availability).toBe('available');
+    expect(row.title).toBe('');
+    // And it survives a round trip through storage, not just the return value.
+    const [reloaded] = await repo.list();
+    expect(reloaded!.availability).toBe('available');
+    expect(reloaded!.title).toBe('');
+  });
+
+  it('never writes a label into the stored title', async () => {
+    const repo = new LocalStorageEventRepository();
+    await repo.create(timed({ title: '', availability: 'available' }));
+    const raw = localStorage.getItem('timeweave.events.v1') ?? '';
+    expect(raw).not.toContain('空き時間');
+    expect(raw).not.toContain('Available');
+  });
+
+  it('stores an all-day available event', async () => {
+    const repo = new LocalStorageEventRepository();
+    const row = await repo.create({
+      title: '', allDay: true,
+      startDate: '2026-08-24', endDate: '2026-08-25',
+      availability: 'available',
+    });
+    expect(row.allDay).toBe(true);
+    expect(row.availability).toBe('available');
+  });
+
+  it('edits busy to available and back', async () => {
+    const repo = new LocalStorageEventRepository();
+    const row = await repo.create(timed());
+    const toAvailable = await repo.update(row.id, { availability: 'available' });
+    expect(toAvailable.availability).toBe('available');
+    const backToBusy = await repo.update(row.id, { availability: 'busy' });
+    expect(backToBusy.availability).toBe('busy');
+  });
+
+  it('leaves availability alone when a patch does not mention it', async () => {
+    const repo = new LocalStorageEventRepository();
+    const row = await repo.create(timed({ availability: 'available' }));
+    const renamed = await repo.update(row.id, { title: '別名' });
+    expect(renamed.availability).toBe('available');
+  });
+
+  it('stores an exception row with its own availability', async () => {
+    const repo = new LocalStorageEventRepository();
+    const master = await repo.create({
+      title: '定例会', allDay: false,
+      startAt: '2026-08-24T00:00:00.000Z', endAt: '2026-08-24T01:00:00.000Z',
+      rrule: 'FREQ=WEEKLY;BYDAY=MO', timezone: 'Asia/Tokyo',
+    });
+    const ex = await repo.createException({
+      ...exceptionInput(master.id), availability: 'available',
+    });
+    expect(ex.availability).toBe('available');
+    // The master is untouched: only this occurrence changed.
+    const rows = await repo.list();
+    expect(rows.find((r) => r.id === master.id)!.availability).toBe('busy');
+  });
+
+  it('keeps it when an occurrence is cancelled in place', async () => {
+    // deleteOccurrence on a row that is ALREADY an exception sends exactly
+    // { isCancelled: true }. The patch names no other column, so availability
+    // must survive it -- the tombstone still belongs to an available series.
+    const repo = new LocalStorageEventRepository();
+    const master = await repo.create({
+      title: '定例会', allDay: false,
+      startAt: '2026-08-24T00:00:00.000Z', endAt: '2026-08-24T01:00:00.000Z',
+      rrule: 'FREQ=WEEKLY;BYDAY=MO', timezone: 'Asia/Tokyo',
+      availability: 'available',
+    });
+    const ex = await repo.createException({
+      ...exceptionInput(master.id), availability: 'available',
+    });
+    const cancelled = await repo.update(ex.id, { isCancelled: true });
+    expect(cancelled.isCancelled).toBe(true);
+    expect(cancelled.availability).toBe('available');
+  });
+
+  it('keeps an overlapping busy event and an available one side by side', async () => {
+    // No new validation: adding a busy event inside an available span must not
+    // require splitting or editing the available one.
+    const repo = new LocalStorageEventRepository();
+    await repo.create(timed({
+      title: '', availability: 'available',
+      startAt: '2026-08-24T04:00:00.000Z', endAt: '2026-08-24T06:00:00.000Z',
+    }));
+    await repo.create(timed({
+      title: '会議',
+      startAt: '2026-08-24T05:00:00.000Z', endAt: '2026-08-24T05:30:00.000Z',
+    }));
+    const rows = await repo.list();
+    expect(rows).toHaveLength(2);
+    expect(rows.map((r) => r.availability).sort()).toEqual(['available', 'busy']);
   });
 });

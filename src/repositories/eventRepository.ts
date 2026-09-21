@@ -104,9 +104,8 @@ export class LocalStorageEventRepository implements EventRepository {
       description: input.description ?? null,
       category: input.category ?? null,
       visibility: input.visibility ?? 'private',
-      // NewEvent cannot carry this yet -- see EventRow.availability -- so every
-      // row this repository writes is 'busy', which is what it has always been.
-      availability: 'busy',
+      // Absent means 'busy', matching eventToInsert and the DB default.
+      availability: input.availability ?? 'busy',
       ...timeFields,
       rrule: input.rrule ?? null,
       recurrenceId: null,
@@ -169,8 +168,8 @@ export class LocalStorageEventRepository implements EventRepository {
       description: input.description,
       category: input.category,
       visibility: input.visibility,
-      // As in create(): ExceptionInput cannot carry it yet.
-      availability: 'busy',
+      // Required on ExceptionInput, so the builder has already decided.
+      availability: input.availability,
       allDay: input.allDay,
       startAt: input.startAt,
       endAt: input.endAt,

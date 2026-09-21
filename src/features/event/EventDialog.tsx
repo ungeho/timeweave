@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import type {
+  Availability,
   EditScope,
   EventEditInput,
   EventOccurrence,
@@ -23,6 +24,7 @@ import {
   TITLE_MAX,
 } from '../../services/contentLimits';
 import { editTimezoneIntent } from '../../services/timezoneRules';
+import { AVAILABILITIES, isTitleRequired } from './availabilityField';
 import { resolveStorableTimeZone } from '../../utils/timezone';
 import {
   EMPTY_RECURRENCE_FORM,
@@ -103,6 +105,7 @@ interface ContentFields {
   description: string | null;
   category: string | null;
   visibility: Visibility;
+  availability: Availability;
 }
 
 /** The validated time representation the form currently describes. */
@@ -156,6 +159,7 @@ export function EventDialog({
   const [endDateInclusive, setEndDateInclusive] = useState('');
   const [category, setCategory] = useState('');
   const [visibility, setVisibility] = useState<Visibility>('private');
+  const [availability, setAvailability] = useState<Availability>('busy');
   const [scope, setScope] = useState<EditScope>('only');
   const [recurrenceForm, setRecurrenceForm] = useState<RecurrenceForm>(EMPTY_RECURRENCE_FORM);
   const [formError, setFormError] = useState<string | null>(null);
@@ -209,6 +213,7 @@ export function EventDialog({
     );
     setCategory(ev.category ?? '');
     setVisibility(ev.visibility);
+    setAvailability(ev.availability);
   };
 
   const seedRecurrence = (rrule: string | null) => {
@@ -232,6 +237,9 @@ export function EventDialog({
       setEndDateInclusive(toDateInputValue(state.startAt));
       setCategory('');
       setVisibility('private');
+      // Reset with the rest of the form: a dialog reopened to create a second
+      // event must not inherit the first one's choice.
+      setAvailability('busy');
       seedRecurrence(null);
       return;
     }
@@ -261,7 +269,10 @@ export function EventDialog({
     time: FormTime;
     rrule: string | null | undefined;
   } | null => {
-    if (!title.trim()) {
+    // Judged on the availability the form is about to SAVE, not the one the row
+    // arrived with: turning an untitled available event back into a busy one has
+    // to ask for the title a busy event needs.
+    if (isTitleRequired(availability) && !title.trim()) {
       setFormError('タイトルを入力してください');
       return null;
     }
@@ -270,6 +281,7 @@ export function EventDialog({
       description: description.trim() || null,
       category: category.trim() || null,
       visibility,
+      availability,
     };
 
     // Checked on the trimmed values, so trailing whitespace never costs a
@@ -543,6 +555,27 @@ export function EventDialog({
             <select value={visibility} onChange={(e) => setVisibility(e.target.value as Visibility)}>
               {VISIBILITIES.map((v) => (
                 <option key={v.value} value={v.value}>{v.label}</option>
+              ))}
+            </select>
+          </label>
+        </div>
+
+        {/* Its own row rather than a third column beside カテゴリ / 公開範囲: the
+            modal is 460px at most and a third field pushed the select past the
+            edge, leaving the dialog horizontally scrollable. A row of its own
+            needs no CSS and keeps the tab order -- after everything a busy event
+            fills in, before the save button -- so the usual flow of title then
+            save still passes no new control. Defaulting to Busy is what makes
+            leaving it alone the same as not seeing it. */}
+        <div className="field-row">
+          <label className="field">
+            <span>状態</span>
+            <select
+              value={availability}
+              onChange={(e) => setAvailability(e.target.value as Availability)}
+            >
+              {AVAILABILITIES.map((a) => (
+                <option key={a.value} value={a.value}>{a.label}</option>
               ))}
             </select>
           </label>

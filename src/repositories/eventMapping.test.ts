@@ -6,16 +6,17 @@ import {
   exceptionToInsert,
   rowToEvent,
 } from './eventMapping';
-import type { ExceptionInput, NewEvent } from '../types/event';
+import type { Availability, ExceptionInput, NewEvent } from '../types/event';
 
 /**
- * These cover the two halves of adding `availability` ahead of its column:
- * reading tolerates its absence, and writing must not mention it at all.
+ * Reading tolerates a row written before the column existed; writing always
+ * states the value.
  *
- * The write half is the one that matters operationally. The production database
- * has no `availability` column, so a payload that names it is rejected outright
- * and every save in the app fails. Until the migration lands, "the key is never
- * in the payload" is a property to assert, not a convention to remember.
+ * The write half inverts what Phase 1A asserted here, and deliberately: that
+ * commit had to keep the key OUT of every payload because the production
+ * database has no such column. From this commit it goes in, which is exactly
+ * why the commit that introduced it must not be deployed until migration 0020
+ * has added the column.
  */
 
 /** A row as PostgREST returns it TODAY: no `availability` key at all. */
@@ -61,32 +62,28 @@ describe('rowToEvent: availability', () => {
 });
 
 /**
- * The safety invariant of this commit. Written against `Object.keys` rather
- * than a value, because the failure being guarded is a key existing at all --
- * `{ availability: undefined }` would still be serialised as a column name.
+ * The write payloads now carry the field. Asserted on `Object.keys` as well as
+ * on the value, because the bug being guarded in both directions is about the
+ * key existing: `{ availability: undefined }` serialises a column name with no
+ * value, which is neither omission nor a usable write.
  */
-describe('write payloads do not name the availability column', () => {
-  const newTimed: NewEvent = {
+describe('write payloads carry availability', () => {
+  /**
+   * A timed one-off. The override type names the fields these tests vary
+   * instead of Partial<NewEvent>, so the result still narrows to one arm of the
+   * union and no cast is needed to hide a shape the repository would reject.
+   */
+  const timed = (
+    over: { title?: string; availability?: Availability } = {},
+  ): NewEvent => ({
     title: '定例会',
     allDay: false,
     startAt: '2026-08-24T00:00:00.000Z',
     endAt: '2026-08-24T01:00:00.000Z',
-  };
-  const newAllDay: NewEvent = {
-    title: '休暇',
-    allDay: true,
-    startDate: '2026-08-24',
-    endDate: '2026-08-25',
-  };
-  const newMaster: NewEvent = {
-    title: '定例会',
-    allDay: false,
-    startAt: '2026-08-24T00:00:00.000Z',
-    endAt: '2026-08-24T01:00:00.000Z',
-    rrule: 'FREQ=WEEKLY;BYDAY=MO',
-    timezone: 'Asia/Tokyo',
-  };
-  const exception: ExceptionInput = {
+    ...over,
+  });
+
+  const exception = (availability: Availability): ExceptionInput => ({
     recurrenceId: 'm',
     recurrenceSlotStart: '2026-08-31T00:00:00.000Z',
     recurrenceSlotDate: null,
@@ -100,38 +97,62 @@ describe('write payloads do not name the availability column', () => {
     description: null,
     category: null,
     visibility: 'private',
-  };
-
-  it.each([
-    ['a timed one-off', newTimed],
-    ['an all-day event', newAllDay],
-    ['a timed recurrence master', newMaster],
-  ] as const)('eventToInsert omits it for %s', (_label, input) => {
-    expect(Object.keys(eventToInsert(input))).not.toContain('availability');
+    availability,
   });
 
-  it('exceptionToInsert omits it', () => {
-    expect(Object.keys(exceptionToInsert(exception))).not.toContain('availability');
+  it('eventToInsert defaults an unspecified availability to busy', () => {
+    // The backward-compatibility rule: a caller that never heard of the field
+    // writes what the app has always written.
+    const insert = eventToInsert(timed());
+    expect(Object.keys(insert)).toContain('availability');
+    expect(insert.availability).toBe('busy');
   });
 
-  it('eventPatchToColumns omits it for every patch the app builds', () => {
-    // The shapes recurrenceOps and exceptionEdit actually produce.
-    const patches = [
-      { title: '変更後', description: null, category: null, visibility: 'private' as const },
-      { isCancelled: true },
-      { timezone: 'Asia/Tokyo' },
-      { allDay: false, startAt: 'a', endAt: 'b', startDate: null, endDate: null },
-    ];
-    for (const p of patches) {
-      expect(Object.keys(eventPatchToColumns(p))).not.toContain('availability');
-    }
+  it('eventToInsert carries an explicit availability', () => {
+    expect(eventToInsert(timed({ availability: 'available' })).availability).toBe('available');
+    expect(eventToInsert(timed({ availability: 'busy' })).availability).toBe('busy');
   });
 
-  it('would send the column if a patch ever carried the field', () => {
-    // Not a wish -- a statement of how the generic patch mapper works, and the
-    // reason exceptionEdit.ts is untouched by this commit. When the column
-    // exists this becomes the mechanism; until then it is the hazard.
-    expect(Object.keys(eventPatchToColumns({ availability: 'available' })))
-      .toContain('availability');
+  it('eventToInsert carries it on an all-day event too', () => {
+    const allDay: NewEvent = {
+      title: '',
+      allDay: true,
+      startDate: '2026-08-24',
+      endDate: '2026-08-25',
+      availability: 'available',
+    };
+    expect(eventToInsert(allDay).availability).toBe('available');
+    // An untitled available event stores the empty string, never a label.
+    expect(eventToInsert(allDay).title).toBe('');
+  });
+
+  it('eventToInsert carries it on a timed recurrence master', () => {
+    const master: NewEvent = {
+      title: '空き',
+      allDay: false,
+      startAt: '2026-08-24T09:00:00.000Z',
+      endAt: '2026-08-24T13:00:00.000Z',
+      rrule: 'FREQ=WEEKLY;BYDAY=TU',
+      timezone: 'Asia/Tokyo',
+      availability: 'available',
+    };
+    expect(eventToInsert(master).availability).toBe('available');
+  });
+
+  it('exceptionToInsert passes the builder’s value through, both ways', () => {
+    expect(exceptionToInsert(exception('available')).availability).toBe('available');
+    expect(exceptionToInsert(exception('busy')).availability).toBe('busy');
+  });
+
+  it('eventPatchToColumns maps it to the availability column', () => {
+    const cols = eventPatchToColumns({ availability: 'available' });
+    expect(Object.keys(cols)).toContain('availability');
+    expect(cols.availability).toBe('available');
+  });
+
+  it('eventPatchToColumns still omits it from a patch that has no such key', () => {
+    // recurrenceOps sends these two verbatim; neither should touch the column.
+    expect(Object.keys(eventPatchToColumns({ isCancelled: true }))).not.toContain('availability');
+    expect(Object.keys(eventPatchToColumns({ timezone: 'Asia/Tokyo' }))).not.toContain('availability');
   });
 });
