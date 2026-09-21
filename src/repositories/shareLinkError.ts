@@ -30,7 +30,8 @@
  * UPDATE, but its delta rule checks only owners whose active or total count
  * RISES (`where d.d_active > 0 or d.d_total > 0`), and the only UPDATE this app
  * issues is revoke_share_link, which lowers the active count. DELETE has no
- * trigger at all. So revoke and list cannot raise any of these three.
+ * trigger at all, so delete_share_link (0015) is not routed through here
+ * either. So revoke, delete and list cannot raise any of these three.
  */
 
 import {
@@ -48,8 +49,9 @@ export function mapShareLinkError(error: WriteErrorLike): Error {
     // 0016. Revoking frees an active slot, and the UI offers it.
     case 'TIMEWEAVE_QUOTA_SHARE_LINKS_ACTIVE':
       return new ShareLinkActiveQuotaExceededError();
-    // 0016. Revoked rows still count; only deleting frees capacity, and this
-    // app has no delete action, so the class says what will not work instead.
+    // 0016. Revoked rows still count; only deleting frees capacity. ShareDialog
+    // offers that delete now, so the class names it -- and names revoking too,
+    // since 0015 deletes only an already-revoked row.
     case 'TIMEWEAVE_QUOTA_SHARE_LINKS_TOTAL':
       return new ShareLinkTotalQuotaExceededError();
     // 0016. The wait comes from HINT; a missing or malformed one costs the

@@ -62,11 +62,20 @@ describe('mapShareLinkError: total quota (0016)', () => {
     expect(err().message).not.toBe(active.message);
   });
 
-  // The dialog has no delete action, so the message must not ask for one --
-  // and it must not let the user think revoking will help.
-  it('asks for no operation this app does not offer', () => {
-    expect(err().message).not.toMatch(/削除/);
-    expect(err().message).toContain('失効させても総数は減りません');
+  // The dialog now offers delete (0015), so the message asks for it -- which is
+  // also what the database's own HINT says. It was previously asserted NOT to
+  // mention 削除, back when no delete action existed to point at.
+  it('names deleting, which frees a slot and which the dialog can now do', () => {
+    expect(err().message).toContain('削除');
+  });
+
+  // Deleting is the step that frees capacity, but 0015 deletes only an
+  // already-revoked row. An owner holding nothing but active links has nothing
+  // to delete yet, so the message has to name revoking as the step before it --
+  // while still refusing to suggest that revoking ALONE helps.
+  it('names revoking as the prerequisite without implying it frees a slot', () => {
+    expect(err().message).toContain('失効させるだけでは総数は減りません');
+    expect(err().message).toContain('先に失効');
   });
 
   it('carries neither the owner id nor the ceiling', () => {

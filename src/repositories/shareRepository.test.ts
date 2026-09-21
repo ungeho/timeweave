@@ -23,6 +23,7 @@ import {
 } from '../errors';
 import {
   createShareLink,
+  deleteShareLink,
   getFreeBusy,
   listShareLinks,
   revokeShareLink,
@@ -130,6 +131,55 @@ describe('revokeShareLink', () => {
     h.state.data = true;
     expect(await revokeShareLink('l1')).toBe(true);
     expect(h.calls[0]).toEqual({ name: 'revoke_share_link', params: { p_id: 'l1' } });
+  });
+});
+
+// 0015. The contract this pins is that `false` is a VALUE, not a failure: the
+// RPC returns it uniformly for an absent id, another owner's id, and one that
+// is still active, so a client cannot use it to probe for rows. Turning any of
+// those into a throw would be inventing information the database refused to
+// give, so these tests assert the resolution, not a rejection.
+describe('deleteShareLink', () => {
+  it('calls delete_share_link with p_id', async () => {
+    h.state.data = true;
+    await deleteShareLink('l1');
+    expect(h.calls).toHaveLength(1);
+    expect(h.calls[0]).toEqual({ name: 'delete_share_link', params: { p_id: 'l1' } });
+  });
+
+  it('returns true when the row was deleted', async () => {
+    h.state.data = true;
+    await expect(deleteShareLink('l1')).resolves.toBe(true);
+  });
+
+  it('resolves false -- not throws -- when the RPC refuses', async () => {
+    h.state.data = false;
+    await expect(deleteShareLink('l1')).resolves.toBe(false);
+  });
+
+  it('resolves false when the RPC returns null', async () => {
+    h.state.data = null;
+    await expect(deleteShareLink('l1')).resolves.toBe(false);
+  });
+
+  it('propagates an RPC error with the server message, like revoke does', async () => {
+    h.state.error = { message: 'authentication required' };
+    await expect(deleteShareLink('l1')).rejects.toThrow(/authentication required/);
+  });
+
+  // DELETE fires no trigger in 0016, so none of mapShareLinkError's three
+  // markers can arrive here. If this call ever started routing through that
+  // mapping, a stray DETAIL would silently change the error's class.
+  it('does not route failures through the create-only quota mapping', async () => {
+    h.state.error = {
+      code: '23514',
+      details: 'TIMEWEAVE_QUOTA_SHARE_LINKS_TOTAL',
+      message: 'refused',
+    };
+    const e = await deleteShareLink('l1').catch((x: unknown) => x);
+    expect(e).not.toBeInstanceOf(ShareLinkTotalQuotaExceededError);
+    expect((e as Error).constructor).toBe(Error);
+    expect((e as Error).message).toBe('refused');
   });
 });
 

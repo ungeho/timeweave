@@ -610,9 +610,27 @@ body {
   flex-direction: column;
   gap: 0.4rem;
 }
+.share-list-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
 .share-list-title {
   margin: 0.4rem 0 0;
   font-size: 0.9rem;
+}
+/* list_share_links orders by created_at desc and takes no arguments, so the
+   revoked rows worth deleting sit at the bottom of a list that may hold
+   share_links_max_total_per_owner() entries. This narrows it client-side. */
+.share-filter {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  cursor: pointer;
 }
 .share-links {
   list-style: none;
@@ -622,6 +640,9 @@ body {
   flex-direction: column;
   gap: 0.35rem;
 }
+/* Wraps so the delete confirmation can take a full row of its own beneath the
+   meta rather than squeezing it: the modal is 460px at most and the prompt is a
+   sentence, not a word. */
 .share-link-item {
   display: flex;
   align-items: center;
@@ -629,9 +650,16 @@ body {
   padding: 0.4rem 0.5rem;
   border: 1px solid var(--border);
   border-radius: 8px;
+  flex-wrap: wrap;
 }
 .share-link-item.inactive {
   opacity: 0.6;
+}
+/* A row being asked to destroy itself is the one thing in this list that must
+   be fully legible, so it comes back to full strength while it is asking. */
+.share-link-item.inactive.confirming {
+  opacity: 1;
+  border-color: var(--danger);
 }
 .share-link-meta {
   display: flex;
@@ -657,11 +685,48 @@ body {
   font-size: 0.75rem;
   color: var(--text-muted);
 }
+/* An expired link still has revoked_at = null, so 0015 will not delete it. It
+   is greyed out like a revoked one and carries no delete button, which without
+   this line would read as an app that simply forgot to offer one. */
+.share-link-hint {
+  font-size: 0.75rem;
+  color: var(--warn-text);
+  white-space: normal;
+}
+/* flex: 1 0 100% puts the prompt on its own line inside the wrapping item. */
+.share-link-confirm {
+  flex: 1 0 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  padding-top: 0.35rem;
+  border-top: 1px solid var(--border);
+}
+.share-link-confirm-text {
+  margin: 0;
+  font-size: 0.8rem;
+  color: var(--danger);
+  min-width: 0;
+}
+.share-link-confirm-actions {
+  display: flex;
+  gap: 0.4rem;
+}
 .share-empty,
 .share-note {
   font-size: 0.8rem;
   color: var(--text-muted);
   margin: 0.2rem 0 0;
+}
+/* Not .form-error: a refused delete is an outcome, not a failure, and colouring
+   it as one would tell the owner something went wrong when nothing did. */
+.share-notice {
+  font-size: 0.85rem;
+  color: var(--text-muted);
+  margin: 0;
+  overflow-wrap: anywhere;
 }
 
 /* ---------- free/busy public page ---------- */

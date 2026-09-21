@@ -188,16 +188,22 @@ export class ShareLinkActiveQuotaExceededError extends Error {
  * Thrown when an account holds as many share links IN TOTAL as it may, counting
  * revoked ones.
  *
- * Mirrors the DB's TIMEWEAVE_QUOTA_SHARE_LINKS_TOTAL (migration 0016). The
- * database's own HINT says to DELETE revoked links, and warns that revoking
- * alone does not help -- but this application has no delete action today
- * (delete_share_link exists in 0015 and is not called from the UI). So the
- * message states the fact and stops there, rather than asking for an operation
- * the user cannot perform here. The one thing it does say is what will NOT work,
- * because "just revoke one" is the obvious wrong guess and costs a link.
+ * Mirrors the DB's TIMEWEAVE_QUOTA_SHARE_LINKS_TOTAL (migration 0016), whose
+ * HINT reads "Delete revoked share links to free capacity; revoking alone does
+ * not." The message now says the same thing, because ShareDialog offers that
+ * delete (0015's delete_share_link) and the owner can act on the advice.
+ *
+ * It names BOTH steps on purpose. Deleting is what frees a slot, but 0015 only
+ * deletes an already-revoked row, so an owner whose links are all still active
+ * has nothing to delete yet and would read "delete one" as advice that does not
+ * apply to them. It also keeps saying what will NOT work, because "just revoke
+ * one" is the obvious wrong guess and costs a link.
+ *
+ * The ceiling stays out of the text: the database owns it
+ * (share_links_max_total_per_owner()), and a copy here could drift.
  */
 export class ShareLinkTotalQuotaExceededError extends Error {
-  constructor(message = '共有リンクの総数が上限に達したため、新しいリンクを作成できません（リンクを失効させても総数は減りません）') {
+  constructor(message = '共有リンクの総数が上限に達しました。失効済みのリンクを削除すると枠が空きます（失効させるだけでは総数は減りません）。失効済みがなければ、不要なリンクを先に失効させてください') {
     super(message);
     this.name = 'ShareLinkTotalQuotaExceededError';
   }

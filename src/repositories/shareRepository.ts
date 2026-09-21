@@ -1,7 +1,8 @@
 /**
  * Data access for share links and Free/Busy, via the Phase 5a SECURITY DEFINER
- * RPCs (see supabase/migrations/0005). The UI never touches share_links or the
- * events table directly; anonymous viewers reach only get_free_busy.
+ * RPCs (see supabase/migrations/0005) plus delete_share_link (0015). The UI
+ * never touches share_links or the events table directly; anonymous viewers
+ * reach only get_free_busy.
  *
  * Only available in Supabase mode (sharing needs auth + the DB functions).
  */
@@ -50,8 +51,8 @@ export interface CreateShareLinkInput {
  * its text. Everything else still surfaces that message unchanged.
  *
  * Only this RPC needs it: 0016's quota trigger checks only owners whose count
- * RISES, so revoke (an UPDATE that lowers) and list cannot raise those refusals,
- * and the create-rate trigger is INSERT-only.
+ * RISES, so revoke (an UPDATE that lowers) and list cannot raise those refusals;
+ * the create-rate trigger is INSERT-only; and delete fires no trigger at all.
  */
 export async function createShareLink(input: CreateShareLinkInput = {}): Promise<CreatedShareLink> {
   const { data, error } = await requireSupabase().rpc('create_share_link', {
@@ -74,6 +75,27 @@ export async function listShareLinks(): Promise<ShareLink[]> {
 
 export async function revokeShareLink(id: string): Promise<boolean> {
   const { data, error } = await requireSupabase().rpc('revoke_share_link', { p_id: id });
+  if (error) throw new Error(error.message);
+  return Boolean(data);
+}
+
+/**
+ * Physically remove one of the caller's REVOKED links (migration 0015).
+ *
+ * `false` is not a failure and must not be thrown: 0015 returns it, uniformly,
+ * for an id that does not exist, one owned by somebody else, and one that is
+ * still active -- deliberately, so the function cannot be used to probe other
+ * owners' primary keys. The caller decides what to say about it; here it is
+ * just the value. Only an unauthenticated call raises (28000), and that
+ * propagates exactly as revokeShareLink's does.
+ *
+ * mapShareLinkError is NOT applied. 0016 hangs its quota trigger on INSERT and
+ * UPDATE and its create-rate trigger on INSERT; DELETE has no trigger at all,
+ * so none of that module's three markers can reach this call, and routing
+ * through it would only invite the belief that they can.
+ */
+export async function deleteShareLink(id: string): Promise<boolean> {
+  const { data, error } = await requireSupabase().rpc('delete_share_link', { p_id: id });
   if (error) throw new Error(error.message);
   return Boolean(data);
 }
