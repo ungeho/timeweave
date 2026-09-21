@@ -54,6 +54,18 @@
   --chip-tint: 12%;
   --chip-time: #5c626d;
 
+  /* How much of the category's own shade survives in a month chip's 3px bar and
+     1px edge; the rest is --text. Light needs none of it (100% is the identity,
+     so the bar is --cat-border exactly, as it has always been) -- see the dark
+     block for why dark does. */
+  --cat-line-mix: 100%;
+  /* NOT a design token: the pre-image of --chip-edge under that mix, so an
+     UNCATEGORISED chip -- whose --cat-border is var(--border) -- ends up at
+     --chip-edge after mixing, unchanged. In light the mix is the identity, so
+     this is just --chip-edge. RECOMPUTE IT if --cat-line-mix, --text or
+     --chip-edge changes in either theme. */
+  --chip-edge-pre: #7b828e;
+
   /* calendar layout tokens (theme-independent) */
   --band-h: 20px;
   --gutter-w: 52px;
@@ -103,4 +115,16 @@
      tint -- it is the light theme that needed a darker one. */
   --chip-tint: 15%;
   --chip-time: #9aa0aa;
+  /* hsl(h 60% 32%) is dark, and so is everything it sits on here: measured over
+     all 360 hues the bar was 1.09-2.94 against the tinted fill, i.e. under 3:1
+     for EVERY hue, and under it against the cell for 275 of them. Keeping 55%
+     of the category and taking 45% from --text lifts it to 3.57 min / 4.40
+     median with no hue left under 3:1, while holding the hue within 3.9deg and
+     42% of the category's chroma -- still a colour, not a grey. */
+  --cat-line-mix: 55%;
+  /* Derived, not chosen: color-mix(in oklab, #2f3948 55%, #e7e9ee) is exactly
+     #7c838f, so the uncategorised chip's edge lands back on --chip-edge and
+     does not move. RECOMPUTE IT if --cat-line-mix (55%), --text (#e7e9ee) or
+     --chip-edge (#7c838f) changes. */
+  --chip-edge-pre: #2f3948;
 }

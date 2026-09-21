@@ -244,8 +244,12 @@ body {
    :not(), and the neutral case cannot drift away from the neutral surface. */
 .event-chip.variant-chip {
   background: color-mix(in oklab, var(--cat-bg) var(--chip-tint), var(--bg-muted));
-  border-left: 3px solid var(--cat-border);
-  box-shadow: inset 0 0 0 1px var(--cat-border);
+  /* --border is redefined for the chip variant ONLY, never on .event-chip: a
+     .variant-block reads --cat-border raw and must keep seeing --chip-edge. */
+  --border: var(--chip-edge-pre);
+  --cat-line: color-mix(in oklab, var(--cat-border) var(--cat-line-mix), var(--text));
+  border-left: 3px solid var(--cat-line);
+  box-shadow: inset 0 0 0 1px var(--cat-line);
 }
 /* Week/day time-grid block: filled with the category color. The edge was an
    OUTER ring in --bg-elevated, i.e. the grid's own colour (1.07:1) -- it fell
