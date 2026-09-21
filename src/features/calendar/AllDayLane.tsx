@@ -66,6 +66,7 @@ export function AllDayLane({
               band.continuesLeft ? 'cont-left' : '',
               band.continuesRight ? 'cont-right' : '',
             ].join(' ').trim()}
+            data-availability={band.occurrence.event.availability}
             style={style}
             onClick={() => onOccurrenceClick(band.occurrence)}
             title={`${shownTitle}（${vis.label}）`}

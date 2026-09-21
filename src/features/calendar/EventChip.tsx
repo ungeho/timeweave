@@ -71,6 +71,10 @@ export function EventChip({ occurrence, variant = 'chip', style, onClick }: Prop
     <button
       type="button"
       className={`event-chip variant-${variant}`}
+      // The hook the availability hatch hangs off. An attribute rather than a
+      // class because CSS is the only reader: nothing branches on it in TS, and
+      // the two variants share this one element.
+      data-availability={event.availability}
       style={colorVars}
       onClick={onClick}
       title={`${shownTitle}（${vis.label}）`}

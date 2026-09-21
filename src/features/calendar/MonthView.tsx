@@ -191,6 +191,7 @@ function MonthBand({
         band.continuesLeft ? 'cont-left' : '',
         band.continuesRight ? 'cont-right' : '',
       ].join(' ').trim()}
+      data-availability={event.availability}
       style={style}
       onClick={(e) => {
         e.stopPropagation();

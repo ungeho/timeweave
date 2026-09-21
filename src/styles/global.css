@@ -1067,3 +1067,60 @@ body {
     font-size: 1rem;
   }
 }
+
+/* ---------- available events ----------
+   An AVAILABLE event keeps its category colour and gains a diagonal hatch; a
+   BUSY one is untouched. The pattern is the whole of the difference, which is
+   what lets "work, available" and "work, busy" stay the same hue -- there is no
+   colour reserved for availability, and there must not be one while hue belongs
+   to the category.
+     Drawn as a background-IMAGE over the background-colour each variant already
+   set, so the month chip's --chip-tint and the block's category fill both show
+   through. Nothing is dimmed: opacity would take the title and the tint down
+   with the pattern. Nothing is added to the DOM, and the --accent hover/focus
+   ring is a box-shadow on the element, so it still lands on top.
+     currentColor is why one declaration serves every shape: it is --text on a
+   month chip and --cat-fg on a filled block or band, so the stripes are drawn
+   in whatever ink that surface already uses, in either theme.
+
+   The two values below are per shape, because the same strength does not read
+   the same at every size. They were chosen by comparing the shapes on screen:
+   a chip is 18px tall and shows a handful of stripes, while a day-view block
+   can fill the column and turns into a texture at the chip's setting. The
+   stripe stays 2px throughout; what changes is how much ink it carries and how
+   far apart the stripes sit.
+
+   The painter names all three shapes rather than the attribute alone: each
+   variant rule above sets `background` as a SHORTHAND, which resets
+   background-image to none at a higher specificity than a bare
+   [data-availability] would have. Matching their specificity and coming later
+   is what lets the layer land. */
+.event-chip.variant-chip[data-availability='available'],
+.event-chip.variant-block[data-availability='available'],
+.allday-band[data-availability='available'] {
+  background-image: repeating-linear-gradient(
+    45deg,
+    color-mix(in oklab, currentColor var(--avail-hatch), transparent) 0 2px,
+    transparent 2px var(--avail-period)
+  );
+}
+/* Month cell chip, and the same chip in the day dialog: the smallest surface,
+   so it carries the most ink of the three. */
+.event-chip.variant-chip[data-availability='available'] {
+  --avail-hatch: 14%;
+  --avail-period: 6px;
+}
+/* Week/day time block: the largest, and the one whose title sits on the pattern
+   the longest. Lighter stripes, further apart -- fewer of them behind the text
+   rather than fainter ones. */
+.event-chip.variant-block[data-availability='available'] {
+  --avail-hatch: 9%;
+  --avail-period: 8px;
+}
+/* All-day band: 20px tall like a chip, but a multi-day one runs the width of
+   the week, so it sits between the two. It is also the shape where a saturated
+   category fill has to stay distinguishable from its busy twin. */
+.allday-band[data-availability='available'] {
+  --avail-hatch: 11%;
+  --avail-period: 7px;
+}
