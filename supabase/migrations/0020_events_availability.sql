@@ -1,0 +1,221 @@
+-- ============================================================================
+-- TimeWeave Phase 2B (Available, step 1 of 5): the events.availability column.
+--
+-- WHAT THIS IS. One column on public.events and one CHECK on its value. That
+-- is the whole file.
+--
+--   availability text not null default 'busy'
+--   check (availability in ('busy', 'available'))
+--
+-- WHAT THIS IS NOT. No change to share_links, free_busy_core, get_free_busy,
+-- create_share_link, list_share_links or any other RPC. No change to any
+-- existing column, CHECK, trigger, RLS policy, GRANT or index. No backfill, no
+-- UPDATE of any existing row, no test fixtures (those live in supabase/tests/).
+-- The Busy filter that teaches Free/Busy about this column is 0021 and is NOT
+-- in this file; until it is applied an 'available' row is still reported as
+-- busy, which is why the ORDER section below forbids deploying the application
+-- on 0020 alone.
+--
+-- ============================================================================
+-- WHY A COLUMN, AND WHY 'busy' IS NOT A GUESS
+--
+-- TimeWeave has always had exactly one meaning for a row: this time is taken.
+-- Availability adds a second, explicit one -- "I am open here" -- which is not
+-- the same as the absence of a row. Absence stays Unknown and is never stored;
+-- only busy and available are values.
+--
+-- Every row that exists today was written under the first meaning, so 'busy' is
+-- what those rows already say. Filling them in with the DEFAULT is therefore a
+-- restatement, not an inference, and that is the whole reason this migration
+-- needs no backfill and no grandfather clause.
+--
+-- ============================================================================
+-- WHY THIS DIFFERS FROM 0008's timezone COLUMN
+--
+-- 0008 added `timezone text` nullable, with no default and no backfill, and
+-- spent its header on a grandfather clause (state M0). It had to: the zone a
+-- legacy series was authored in is UNKNOWABLE, so NULL had to mean "we do not
+-- know", and stamping a value would have changed what those series MEAN.
+--
+-- Nothing here is unknowable. A pre-existing row means busy, so there is no
+-- third state to represent and no reason for the column to be nullable. NOT
+-- NULL DEFAULT 'busy' is the narrower schema and the one that cannot be read
+-- two ways: there is no such thing as a row whose availability is unset.
+--
+-- ============================================================================
+-- WHY A CHECK, AND WHY NOT A TRIGGER
+--
+-- The rule is decidable from one row, reads nothing else and takes no lock, so
+-- it belongs in a CHECK for the reason 0013 gives: `session_replication_role =
+-- 'replica'` disables triggers but NOT check constraints, and that setting is
+-- what a logical-replication apply worker and several restore paths run under.
+--
+-- 0008 argued the opposite way about ITS value check, and both arguments are
+-- right, because they are about different situations. 0008 already had a BEFORE
+-- ROW trigger (events_validate_timezone) on the same column; a CHECK behind it
+-- would have been dead code on the write path and, where it did fire, would
+-- have raised 23514 WITHOUT the DETAIL token clients depend on. availability
+-- has no trigger, so a CHECK here is the only gate, it fires everywhere, and it
+-- is the same shape as `visibility`'s own CHECK in 0001.
+--
+-- ============================================================================
+-- WHAT IS DELIBERATELY *NOT* CONSTRAINED
+--
+-- There is no placement rule saying WHICH rows may be 'available'. 0008 added
+-- one (events_timezone_placement) because a zone on a one-off row would have
+-- been decoration inviting the question "does changing it move the event?".
+-- Availability has a plain meaning on every shape this table stores:
+--
+--   * one-off timed and all-day rows -- the obvious case;
+--   * a recurrence MASTER -- every occurrence it generates inherits it;
+--   * an exception SNAPSHOT -- it overrides one occurrence, availability and
+--     all;
+--   * a CANCELLATION tombstone -- services/exceptionEdit.ts buildCancellation
+--     copies the master's value into it, by the same argument it copies
+--     visibility. A tombstone contributes nothing to any busy or available set
+--     either way, so the value is inert there; it is carried rather than reset
+--     so that a tombstone and an override row are built the same way.
+--
+-- The absence of a placement constraint is a decision, not an omission.
+--
+-- No index either. The column is never searched on its own; 0021 will add it as
+-- a further predicate to queries already narrowed by (owner_id, start_at) and
+-- (owner_id, start_date). Whether one is worth having is a question for 0021,
+-- with measurements, not for this file.
+--
+-- ============================================================================
+-- COMPATIBILITY, CHECKED AGAINST THE REPOSITORY BEFORE WRITING THIS
+--
+-- EXISTING CONSTRAINTS. public.events carries events_time_shape,
+-- events_master_not_exception, events_exception_slot,
+-- events_cancel_only_on_exception (0001, the first of them replaced in 0013),
+-- events_timezone_placement (0008), events_title_len, events_category_len,
+-- events_description_len, events_id_owner_key, events_recurrence_owner_fkey
+-- (0011), events_rrule_len, events_timed_range, events_allday_range,
+-- events_recurrence_not_self (0013). Every one of them is written over named
+-- columns; none is a row-wide assertion, so a new column cannot interact with
+-- any of them.
+--
+-- EXISTING TRIGGERS. Nine: events_set_updated_at (0001),
+-- events_validate_timezone (0008), events_quota_exception_ai/au,
+-- events_quota_owner_ai/au (0011), events_rate_ai/au (0012),
+-- events_quota_graph_ai/au (0017). None of their functions uses to_jsonb(new),
+-- `select *` or a whole-row comparison, so none of them changes behaviour when
+-- the table gains a column.
+--
+-- RLS AND GRANTS ARE UNTOUCHED. The four owner-only policies from 0001 and the
+-- table-level GRANT to `authenticated` from 0002 cover the table, not a column
+-- list, so the new column inherits them. anon still has nothing on this table.
+--
+-- FREE/BUSY IS UNTOUCHED. free_busy_core reads public.events in thirteen
+-- places and names no column that this file adds, so applying 0020 alone
+-- changes nothing about what any share link returns.
+--
+-- THE CLIENT. Phase 1A reads the column tolerantly (eventMapping.rowToEvent
+-- uses `row.availability ?? 'busy'`), and Phase 1B WRITES it on every insert
+-- and on any patch that carries the field (eventToInsert, exceptionToInsert,
+-- FIELD_TO_COLUMN). That is why this column must exist in production BEFORE
+-- commit f726f72 or anything later is deployed.
+--
+-- ============================================================================
+-- LOCKING, AND WHAT IS NOT VERIFIED HERE
+--
+-- ADD COLUMN takes ACCESS EXCLUSIVE on public.events for the length of this
+-- transaction. PostgreSQL 11 and later record a non-volatile DEFAULT in the
+-- catalog instead of rewriting the table, and 'busy' is a constant, so this
+-- should be a catalog-only change. THE SERVER VERSION HAS NOT BEEN VERIFIED
+-- FOR THIS FILE -- confirm it in the preflight before applying, and treat a
+-- rewrite as possible until it is.
+--
+-- The CHECK is added in the same transaction and validates immediately. It
+-- scans a table on which every row holds the DEFAULT, so it cannot fail and
+-- there is nothing for NOT VALID to buy. 0013 makes the same argument at this
+-- table's size.
+--
+-- POSTGREST. The column has to be in PostgREST's schema cache before a client
+-- may send it. Supabase reloads that cache on DDL, but THAT HAS NOT BEEN
+-- VERIFIED FOR THIS PROJECT. Confirm with a real REST insert carrying
+-- `availability` before deploying the application.
+--
+-- ============================================================================
+-- ORDER, AND THE STOP AFTER THIS FILE
+--
+--   0020  this file (the column)
+--   0021  free_busy_core: exclude 'available' rows from the busy set
+--   then  deploy the application (commits 17c4423, f726f72, 86a7844)
+--
+-- 0021 CANNOT be applied first: its predicate names this column. The
+-- application MUST NOT be deployed between the two: it is the only thing that
+-- can write 'available', and until 0021 is in place such a row is still
+-- disclosed as busy -- the exact opposite of what its owner said. Applying 0020
+-- and 0021 back to back keeps that window closed entirely, and 0021 is a no-op
+-- at the moment it lands because every row is still 'busy'.
+--
+-- ============================================================================
+-- ROLLBACK, AND THE WINDOW IT CLOSES IN
+--
+-- Until the application is deployed, nothing can write 'available' and
+--
+--   alter table public.events drop column availability;
+--
+-- loses no user data.
+--
+-- AFTER THAT DEPLOY THE COLUMN MUST NOT BE DROPPED. From that point it holds
+-- something no other column records -- an owner saying a time is open -- and
+-- dropping it destroys that silently. Roll the application back instead and
+-- leave the column and 0021 in place.
+-- ============================================================================
+
+begin;
+
+-- ============================================================================
+-- 1. The column.
+--
+-- `if not exists` matches 0008's own ADD COLUMN and keeps a second run from
+-- erroring on the column NAME. THAT IS ALL IT CHECKS. If a column called
+-- availability already exists, this statement is skipped whatever its type, its
+-- DEFAULT or its nullability -- the wrong shape would pass silently.
+--
+-- THIS FILE IS WRITTEN FOR A FIRST APPLICATION, NOT AS AN IDEMPOTENT REPAIR.
+-- Re-running it is not a no-op (section 2 drops and re-creates the constraint),
+-- and it cannot correct a column that is already there but wrong. Establishing
+-- what production actually holds is the preflight's job, not this file's:
+-- confirm from information_schema.columns and pg_constraint that the column and
+-- the constraint are ABSENT, or that every attribute matches what is declared
+-- below, before applying.
+-- ============================================================================
+alter table public.events
+  add column if not exists availability text not null default 'busy';
+
+comment on column public.events.availability is
+  'Whether this event OCCUPIES its time (busy) or declares it OPEN (available). '
+  'Independent of visibility, category and title. Rows written before this '
+  'column existed read as busy, which is what they have always meant; the '
+  'absence of a row is Unknown and is never stored here.';
+
+-- ============================================================================
+-- 2. The value.
+--
+-- The two values the application knows, spelled the way `visibility` is spelled
+-- in 0001. A third value must arrive with the code that understands it, not
+-- before: 0021 will filter the busy set with `availability = 'busy'` rather
+-- than `<> 'available'` precisely so that an unknown value fails closed and is
+-- never silently disclosed as free.
+--
+-- The drop is kept so that re-running this file cleans up an earlier draft,
+-- exactly as 0008 does for its own constraints. NOTE WHAT THAT COSTS: unlike
+-- the ADD COLUMN above, this pair is NOT a no-op on a second run. It removes a
+-- constraint that was enforcing the rule and adds it back, taking ACCESS
+-- EXCLUSIVE and re-validating every row. On a first application there is
+-- nothing to re-validate; on a repeat there is, and a row outside the two
+-- values would make the whole transaction fail -- which is the right outcome,
+-- but it is an outcome, not the absence of one.
+-- ============================================================================
+alter table public.events
+  drop constraint if exists events_availability_values;
+
+alter table public.events
+  add constraint events_availability_values
+    check (availability in ('busy', 'available'));
+
+commit;
