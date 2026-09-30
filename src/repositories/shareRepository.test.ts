@@ -280,6 +280,8 @@ describe('getFreeBusy', () => {
       },
     });
     expect(res).toEqual({
+      // 0023 added linkState; this response predates it and so reads as active.
+      linkState: 'active',
       complete: false,
       slots: [
         { allDay: true, startDate: '2026-09-01', endDate: '2026-09-02' },
@@ -291,12 +293,61 @@ describe('getFreeBusy', () => {
   it('defaults to complete=false-safe empty when data is empty', async () => {
     h.state.data = {};
     const res = await getFreeBusy('t', 'a', 'b', 'c', 'd');
-    expect(res).toEqual({ complete: false, slots: [] });
+    expect(res).toEqual({ linkState: 'active', complete: false, slots: [] });
   });
 
   it('propagates the 22023 over-range error', async () => {
     h.state.error = { message: 'requested range exceeds 92 days' };
     await expect(getFreeBusy('t', 'a', 'b', 'c', 'd')).rejects.toThrow(/exceeds 92 days/);
+  });
+
+  // 0023. link_state is the ONLY thing that may hide a calendar, and only when
+  // it is exactly 'unavailable'. Everything else -- a backend that predates the
+  // migration, an explicit null, a value from some later phase this build has
+  // never heard of -- must read as active, because the cost of the two mistakes
+  // is not symmetric: calling an active link unavailable hides a real owner's
+  // busy times behind what looks like a broken link, while calling an
+  // unavailable link active merely reproduces the pre-0023 page, since such a
+  // response carries complete=true and slots=[] anyway.
+  it('reads link_state active and keeps the Busy payload', async () => {
+    h.state.data = {
+      link_state: 'active',
+      complete: true,
+      slots: [{ all_day: false, start: '2026-09-01T09:00:00+00:00', end: '2026-09-01T10:00:00+00:00' }],
+    };
+    const res = await getFreeBusy('t', 'a', 'b', 'c', 'd');
+    expect(res.linkState).toBe('active');
+    expect(res.complete).toBe(true);
+    expect(res.slots).toEqual([
+      { allDay: false, start: '2026-09-01T09:00:00+00:00', end: '2026-09-01T10:00:00+00:00' },
+    ]);
+  });
+
+  it('reads link_state unavailable', async () => {
+    h.state.data = { link_state: 'unavailable', complete: true, slots: [] };
+    const res = await getFreeBusy('t', 'a', 'b', 'c', 'd');
+    expect(res).toEqual({ linkState: 'unavailable', complete: true, slots: [] });
+  });
+
+  it('treats a legacy response with no link_state as active', async () => {
+    h.state.data = { complete: true, slots: [] };
+    expect((await getFreeBusy('t', 'a', 'b', 'c', 'd')).linkState).toBe('active');
+  });
+
+  it('treats a null link_state as active', async () => {
+    h.state.data = { link_state: null, complete: true, slots: [] };
+    expect((await getFreeBusy('t', 'a', 'b', 'c', 'd')).linkState).toBe('active');
+  });
+
+  it('treats an unrecognised link_state as active, not unavailable', async () => {
+    h.state.data = { link_state: 'suspended', complete: true, slots: [] };
+    expect((await getFreeBusy('t', 'a', 'b', 'c', 'd')).linkState).toBe('active');
+  });
+
+  it('keeps complete=false alongside a link_state', async () => {
+    h.state.data = { link_state: 'active', complete: false, slots: [] };
+    const res = await getFreeBusy('t', 'a', 'b', 'c', 'd');
+    expect(res).toEqual({ linkState: 'active', complete: false, slots: [] });
   });
 });
 
@@ -338,6 +389,10 @@ describe('getFreeBusy: 0019 rate-limit refusals', () => {
 
   it('still returns data when there is no error', async () => {
     h.state.data = { complete: true, slots: [] };
-    await expect(getFreeBusy('t', 'a', 'b', 'c', 'd')).resolves.toEqual({ complete: true, slots: [] });
+    // linkState is 0023's addition; this fixture carries no link_state, so the
+    // legacy fallback applies. The point of the test -- that a successful call
+    // is not routed through the rate-limit mapping -- is unchanged.
+    await expect(getFreeBusy('t', 'a', 'b', 'c', 'd'))
+      .resolves.toEqual({ linkState: 'active', complete: true, slots: [] });
   });
 });

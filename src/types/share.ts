@@ -41,11 +41,27 @@ export type FreeBusySlot =
   | { allDay: true; startDate: string; endDate: string }; // "YYYY-MM-DD", end exclusive
 
 /**
+ * What the anonymous API says about the link itself (migration 0023).
+ *
+ * `unavailable` is the ONE answer for every reason a link cannot be read --
+ * expired, revoked, deleted, never existed, unknown or malformed token. The
+ * reason is deliberately not disclosed and must never be reconstructed here or
+ * shown to a viewer. `active` says only that the link can be read; it says
+ * nothing about whether anything was disclosed for the requested window.
+ */
+export type PublicLinkState = 'active' | 'unavailable';
+
+/**
  * Free/Busy over a window. `complete` is false when the owner has recurring
  * events the Phase 5a RPC cannot yet expand: the shown busy blocks are valid,
  * but times NOT shown must NOT be assumed free.
+ *
+ * `linkState` is REQUIRED even though the database may omit it: a response from
+ * a pre-0023 backend is normalised to 'active' at the repository boundary, so
+ * every value reaching the UI is one of the two states. See shareRepository.
  */
 export interface FreeBusyResult {
+  linkState: PublicLinkState;
   complete: boolean;
   slots: FreeBusySlot[];
 }

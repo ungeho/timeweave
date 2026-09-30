@@ -148,6 +148,19 @@ type FreeBusySlotDb =
   | { all_day: false; start: string; end: string }
   | { all_day: true; start_date: string; end_date: string };
 
+/**
+ * Raw shape from get_free_busy (snake_case). `link_state` is typed as a plain
+ * string, NOT as PublicLinkState: it arrives from the wire, a pre-0023 backend
+ * omits it entirely, and a later backend could send a value this build has
+ * never heard of. Narrowing happens once, in getFreeBusy, rather than being
+ * asserted here.
+ */
+interface FreeBusyDbResult {
+  link_state?: string | null;
+  complete?: boolean;
+  slots?: FreeBusySlotDb[];
+}
+
 function mapSlot(s: FreeBusySlotDb): FreeBusySlot {
   return s.all_day
     ? { allDay: true, startDate: s.start_date, endDate: s.end_date }
@@ -181,8 +194,16 @@ export async function getFreeBusy(
     p_to_date: toDate,
   });
   if (error) throw mapFreeBusyError(error);
-  const result = (data ?? {}) as { complete?: boolean; slots?: FreeBusySlotDb[] };
+  const result = (data ?? {}) as FreeBusyDbResult;
   return {
+    // 0023. ONLY the exact string 'unavailable' hides content. Missing, null
+    // and any unrecognised value all read as 'active', and the asymmetry is the
+    // point: a pre-0023 backend sends no link_state at all, and treating that
+    // as unavailable would hide a genuinely active owner's busy times behind an
+    // error-looking page. The opposite mistake is harmless -- an unavailable
+    // answer carries complete=true and slots=[], so reading it as active just
+    // reproduces what the page did before 0023 existed.
+    linkState: result.link_state === 'unavailable' ? 'unavailable' : 'active',
     complete: Boolean(result.complete),
     slots: (result.slots ?? []).map(mapSlot),
   };

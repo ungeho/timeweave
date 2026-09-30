@@ -31,6 +31,11 @@ import { useCalendarView } from '../../hooks/useCalendarView';
 import { buildWeekDays, weekRange, weekTitle } from '../calendar/weekGrid';
 import { busyForDay, hasNoDisclosedBusy } from './freeBusyLayout';
 import { freeBusyErrorBanner } from './freeBusyBanner';
+import {
+  ACTIVE_EMPTY_MESSAGE,
+  UNAVAILABLE_MESSAGE,
+  freeBusyPresentation,
+} from './freeBusyPresentation';
 
 type Load =
   | { status: 'loading' }
@@ -88,6 +93,24 @@ export function FreeBusyPage({ token }: { token: string }) {
     );
   }
 
+  // 0023. An unavailable link is a SUCCESSFUL answer, not a fetch failure, so it
+  // is decided here rather than in the error branch. Everything that belongs to
+  // a readable calendar is withheld: the week navigation (which would refetch
+  // per week for a link that can never answer), the grid (which must not be left
+  // showing a previously rendered week), the completeness warning, the empty-
+  // period notice and the busy-semantics footer. Header plus one generic line.
+  if (freeBusyPresentation(load) === 'unavailable') {
+    return (
+      <div className="freebusy-page">
+        <header className="freebusy-header">
+          <div className="brand">TimeWeave</div>
+          <span className="freebusy-subtitle">空き時間（読み取り専用）</span>
+        </header>
+        <p className="banner warn" role="alert">{UNAVAILABLE_MESSAGE}</p>
+      </div>
+    );
+  }
+
   return (
     <div className="freebusy-page">
       <header className="freebusy-header">
@@ -111,9 +134,7 @@ export function FreeBusyPage({ token }: { token: string }) {
       )}
 
       {load.status === 'ok' && hasNoDisclosedBusy(load.result) && (
-        <p className="banner info">
-          この期間に共有されている予定はありません。共有リンクが失効または期限切れの場合も同じ表示になります。
-        </p>
+        <p className="banner info">{ACTIVE_EMPTY_MESSAGE}</p>
       )}
 
       {load.status === 'error' && (
