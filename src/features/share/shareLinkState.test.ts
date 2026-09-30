@@ -19,6 +19,10 @@ const link = (over: Partial<ShareLink> = {}): ShareLink => ({
   expiresAt: null,
   revokedAt: null,
   createdAt: '2026-09-01T00:00:00Z',
+  // 0022's opt-in. None of the three functions under test reads it: a link's
+  // status and deletability come from revokedAt and expiresAt alone, and that is
+  // the point -- sharing available time is a setting, not a lifecycle state.
+  shareAvailable: false,
   ...over,
 });
 
@@ -71,6 +75,27 @@ describe('canDeleteShareLink', () => {
   it('ignores expiry entirely, in both directions', () => {
     expect(canDeleteShareLink(link({ revokedAt: '2026-09-10T00:00:00Z', expiresAt: '2099-01-01T00:00:00Z' }))).toBe(true);
     expect(canDeleteShareLink(link({ expiresAt: '2000-01-01T00:00:00Z' }))).toBe(false);
+  });
+});
+
+// 0022. shareAvailable is a SETTING; revokedAt and expiresAt are the lifecycle.
+// Nothing here may consult it -- a link that shares available time must still be
+// revocable and deletable on exactly the same terms as one that does not, or an
+// owner could find the opt-in has quietly made a link harder to take back.
+describe('shareAvailable does not affect status or deletability', () => {
+  it('leaves shareLinkStatus alone in every state', () => {
+    for (const on of [false, true]) {
+      expect(shareLinkStatus(link({ shareAvailable: on }), NOW)).toBe('active');
+      expect(shareLinkStatus(link({ shareAvailable: on, expiresAt: '2026-01-01T00:00:00Z' }), NOW)).toBe('expired');
+      expect(shareLinkStatus(link({ shareAvailable: on, revokedAt: '2026-09-10T00:00:00Z' }), NOW)).toBe('revoked');
+    }
+  });
+
+  it('leaves canDeleteShareLink alone', () => {
+    for (const on of [false, true]) {
+      expect(canDeleteShareLink(link({ shareAvailable: on }))).toBe(false);
+      expect(canDeleteShareLink(link({ shareAvailable: on, revokedAt: '2026-09-10T00:00:00Z' }))).toBe(true);
+    }
   });
 });
 

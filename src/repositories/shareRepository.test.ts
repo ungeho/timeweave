@@ -27,6 +27,7 @@ import {
   getFreeBusy,
   listShareLinks,
   revokeShareLink,
+  setShareAvailable,
 } from './shareRepository';
 
 beforeEach(() => {
@@ -39,23 +40,54 @@ describe('createShareLink', () => {
   it('passes params and maps the single returned row (with token)', async () => {
     h.state.data = [{
       id: 'l1', token: 'secret-token', label: 'v', include_private: true,
-      expires_at: null, created_at: '2026-08-30T00:00:00Z',
+      expires_at: null, created_at: '2026-08-30T00:00:00Z', share_available: false,
     }];
     const link = await createShareLink({ label: 'v', includePrivate: true });
     expect(h.calls[0]).toEqual({
       name: 'create_share_link',
-      params: { p_label: 'v', p_include_private: true, p_expires_at: null },
+      params: {
+        p_label: 'v', p_include_private: true, p_expires_at: null,
+        p_share_available: false,
+      },
     });
     expect(link).toEqual({
       id: 'l1', token: 'secret-token', label: 'v', includePrivate: true,
       expiresAt: null, revokedAt: null, createdAt: '2026-08-30T00:00:00Z',
+      shareAvailable: false,
     });
   });
 
   it('defaults include_private to true when omitted', async () => {
-    h.state.data = [{ id: 'l', token: 't', label: null, include_private: true, expires_at: null, created_at: 'c' }];
+    h.state.data = [{ id: 'l', token: 't', label: null, include_private: true, expires_at: null, created_at: 'c', share_available: false }];
     await createShareLink();
     expect((h.calls[0]!.params as Record<string, unknown>).p_include_private).toBe(true);
+  });
+
+  // 0022. The RPC parameter has its own DEFAULT of false, but the call still
+  // sends the argument explicitly: a caller that omits shareAvailable must get
+  // an opted-OUT link, and that has to be true of the wire call, not only of
+  // the database.
+  it('sends p_share_available false when omitted', async () => {
+    h.state.data = [{ id: 'l', token: 't', label: null, include_private: true, expires_at: null, created_at: 'c', share_available: false }];
+    await createShareLink();
+    expect((h.calls[0]!.params as Record<string, unknown>).p_share_available).toBe(false);
+  });
+
+  it('passes and maps an explicit opt-in', async () => {
+    h.state.data = [{ id: 'l', token: 't', label: null, include_private: false, expires_at: null, created_at: 'c', share_available: true }];
+    const link = await createShareLink({ includePrivate: false, shareAvailable: true });
+    expect((h.calls[0]!.params as Record<string, unknown>).p_share_available).toBe(true);
+    // Independent settings: opting in to available time does not require, and
+    // does not silently turn on, private-event inclusion.
+    expect(link.shareAvailable).toBe(true);
+    expect(link.includePrivate).toBe(false);
+  });
+
+  // An unapplied 0022 makes the RPC return a row with no share_available at all.
+  // "Unknown" must read as not opted in, never as opted in.
+  it('reads a missing share_available as false', async () => {
+    h.state.data = [{ id: 'l', token: 't', label: null, include_private: true, expires_at: null, created_at: 'c' }];
+    expect((await createShareLink()).shareAvailable).toBe(false);
   });
 
   it('throws on RPC error', async () => {
@@ -111,11 +143,13 @@ describe('listShareLinks', () => {
     h.state.data = [{
       id: 'l1', label: 'a', include_private: false,
       expires_at: '2026-12-31T00:00:00Z', revoked_at: null, created_at: 'c',
+      share_available: true,
     }];
     const links = await listShareLinks();
     expect(links).toEqual([{
       id: 'l1', label: 'a', includePrivate: false,
       expiresAt: '2026-12-31T00:00:00Z', revokedAt: null, createdAt: 'c',
+      shareAvailable: true,
     }]);
     expect('token' in (links[0] as object)).toBe(false);
   });
@@ -131,6 +165,48 @@ describe('revokeShareLink', () => {
     h.state.data = true;
     expect(await revokeShareLink('l1')).toBe(true);
     expect(h.calls[0]).toEqual({ name: 'revoke_share_link', params: { p_id: 'l1' } });
+  });
+});
+
+// 0022. Same shape of contract as deleteShareLink below: `false` is a VALUE, not
+// a failure. The RPC returns it for an absent id, another owner's id, a revoked
+// link and an expired one, so a client cannot use it to probe for rows -- and
+// because the RPC is idempotent, it never means "the value was already that".
+describe('setShareAvailable', () => {
+  it('sends the id and the flag, and returns the boolean result', async () => {
+    h.state.data = true;
+    expect(await setShareAvailable('l1', true)).toBe(true);
+    expect(h.calls[0]).toEqual({
+      name: 'set_share_available',
+      params: { p_id: 'l1', p_enabled: true },
+    });
+  });
+
+  it('sends false as false, not as an omission', async () => {
+    h.state.data = true;
+    await setShareAvailable('l1', false);
+    expect((h.calls[0]!.params as Record<string, unknown>).p_enabled).toBe(false);
+  });
+
+  it('resolves false for a refusal instead of throwing', async () => {
+    h.state.data = false;
+    await expect(setShareAvailable('nope', true)).resolves.toBe(false);
+  });
+
+  it('throws only on an RPC error', async () => {
+    h.state.error = { message: 'authentication required' };
+    await expect(setShareAvailable('l1', true)).rejects.toThrow(/authentication required/);
+  });
+
+  // 0016's quota trigger selects only owners whose count RISES and this UPDATE
+  // moves no count, so its markers cannot reach here. If one somehow does, it
+  // must stay a plain Error rather than be dressed up as a quota refusal the
+  // owner cannot act on.
+  it('does not route errors through mapShareLinkError', async () => {
+    h.state.error = { code: '23514', details: 'TIMEWEAVE_QUOTA_SHARE_LINKS_ACTIVE', message: 'quota' };
+    const e = await setShareAvailable('l1', true).catch((x: unknown) => x);
+    expect(e).not.toBeInstanceOf(ShareLinkActiveQuotaExceededError);
+    expect((e as Error).message).toBe('quota');
   });
 });
 

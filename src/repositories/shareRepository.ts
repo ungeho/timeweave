@@ -1,8 +1,8 @@
 /**
  * Data access for share links and Free/Busy, via the Phase 5a SECURITY DEFINER
- * RPCs (see supabase/migrations/0005) plus delete_share_link (0015). The UI
- * never touches share_links or the events table directly; anonymous viewers
- * reach only get_free_busy.
+ * RPCs (see supabase/migrations/0005) plus delete_share_link (0015) and
+ * set_share_available (0022). The UI never touches share_links or the events
+ * table directly; anonymous viewers reach only get_free_busy.
  *
  * Only available in Supabase mode (sharing needs auth + the DB functions).
  */
@@ -25,6 +25,10 @@ interface ShareLinkDbRow {
   expires_at: string | null;
   revoked_at?: string | null; // create_share_link does not return it (always null then)
   created_at: string;
+  // 0022. Both functions return it once that migration is applied; optional here
+  // for the same reason revoked_at is -- a row can arrive without it, in this
+  // case from a database where 0022 has not run yet.
+  share_available?: boolean | null;
 }
 
 function mapLink(row: ShareLinkDbRow): ShareLink {
@@ -35,6 +39,11 @@ function mapLink(row: ShareLinkDbRow): ShareLink {
     expiresAt: row.expires_at,
     revokedAt: row.revoked_at ?? null,
     createdAt: row.created_at,
+    // Coerced, not passed through. 0022's column is NOT NULL, so a missing or
+    // null value here means the RPC did not return it, and the safe reading of
+    // "unknown" is NOT opted in: the alternative would have an old database
+    // present every link as sharing available time.
+    shareAvailable: row.share_available === true,
   };
 }
 
@@ -42,6 +51,12 @@ export interface CreateShareLinkInput {
   label?: string | null;
   includePrivate?: boolean;
   expiresAt?: string | null;
+  /**
+   * Opt in to sharing available time (0022). Omitted means false, matching the
+   * RPC parameter's own default, so an existing caller creates an opted-out link
+   * without changing anything.
+   */
+  shareAvailable?: boolean;
 }
 
 /**
@@ -59,6 +74,7 @@ export async function createShareLink(input: CreateShareLinkInput = {}): Promise
     p_label: input.label ?? null,
     p_include_private: input.includePrivate ?? true,
     p_expires_at: input.expiresAt ?? null,
+    p_share_available: input.shareAvailable ?? false,
   });
   if (error) throw mapShareLinkError(error);
   // Returns a single-row table.
@@ -71,6 +87,33 @@ export async function listShareLinks(): Promise<ShareLink[]> {
   const { data, error } = await requireSupabase().rpc('list_share_links');
   if (error) throw new Error(error.message);
   return ((data ?? []) as ShareLinkDbRow[]).map(mapLink);
+}
+
+/**
+ * Turn available-time sharing on or off for one of the caller's ACTIVE links
+ * (migration 0022). The only way to change the setting after creation:
+ * includePrivate, expiresAt and label remain creation-only, and there is no
+ * generic link update.
+ *
+ * `false` is not a failure and must not be thrown -- it is 0022's uniform answer
+ * for an id that does not exist, one owned by somebody else, one that is
+ * revoked, and one that is expired, deliberately so the function cannot be used
+ * to probe other owners' primary keys. It is also NOT "nothing changed": the RPC
+ * is idempotent, so setting the value a link already holds returns true. The
+ * caller decides what to say about false; here it is just the value.
+ *
+ * Only an unauthenticated call raises (28000). mapShareLinkError is NOT applied,
+ * for revokeShareLink's reason: 0016's quota trigger selects only owners whose
+ * count RISES and this UPDATE moves no count, and the create-rate trigger is
+ * INSERT-only, so none of that module's refusals can reach here.
+ */
+export async function setShareAvailable(id: string, enabled: boolean): Promise<boolean> {
+  const { data, error } = await requireSupabase().rpc('set_share_available', {
+    p_id: id,
+    p_enabled: enabled,
+  });
+  if (error) throw new Error(error.message);
+  return Boolean(data);
 }
 
 export async function revokeShareLink(id: string): Promise<boolean> {

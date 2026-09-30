@@ -15,6 +15,18 @@ export interface ShareLink {
   expiresAt: string | null; // UTC ISO, null = no expiry
   revokedAt: string | null; // UTC ISO, null = active
   createdAt: string;
+  /**
+   * Whether this link may disclose the owner's AVAILABLE time as well as the
+   * busy time it has always disclosed (migration 0022). Independent of
+   * includePrivate: that one decides whether private events participate at all,
+   * this one decides whether open time is shared. All four combinations are
+   * legal.
+   *
+   * NOTHING READS IT YET. The anonymous Free/Busy response is unchanged whatever
+   * this is set to, so `true` currently means only "the owner has opted in",
+   * never "open time is being shown".
+   */
+  shareAvailable: boolean;
 }
 
 /** Result of creating a link: the plaintext token is present exactly once. */
