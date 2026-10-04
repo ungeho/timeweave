@@ -11,7 +11,8 @@
  * button appears on exactly those rows, and an expired-but-not-revoked link says
  * so rather than offering a button the RPC would silently refuse. The rule
  * itself lives in shareLinkState.ts, where it can be tested; this file renders
- * it, because the project has no component-test environment.
+ * it, because the project has no component-test environment. The management
+ * label's length rule lives in shareLinkLabel.ts for the same reason.
  */
 
 import { useEffect, useRef, useState } from 'react';
@@ -23,6 +24,7 @@ import {
 } from '../../repositories/shareRepository';
 import type { CreatedShareLink, ShareLink } from '../../types/share';
 import { isoFromDatetimeLocalValue } from '../../utils/datetime';
+import { SHARE_LABEL_MAX, labelLengthError, shareLabelLength } from './shareLinkLabel';
 import { canDeleteShareLink, shareLinkStatus, visibleShareLinks } from './shareLinkState';
 
 const shareUrl = (token: string) => `${window.location.origin}/s/${token}`;
@@ -85,11 +87,21 @@ export function ShareDialog({ onClose }: { onClose: () => void }) {
   }, []);
 
   const handleCreate = async () => {
-    setCreating(true);
     setError(null);
     setNotice(null);
     setConfirmingDeleteId(null);
     setCopied(false);
+    // Normally unreachable through this input, which enforces the same product
+    // limit with maxLength. The rule is stated once more at the submit boundary
+    // for programmatic values and future input paths. The database's 200-byte
+    // CHECK is a separate storage bound -- 50 UTF-16 units occupy at most 150
+    // UTF-8 bytes, so it cannot fire for anything this guard accepts.
+    const tooLong = labelLengthError(label);
+    if (tooLong) {
+      setError(tooLong);
+      return;
+    }
+    setCreating(true);
     try {
       const created = await createShareLink({
         label: label.trim() || null,
@@ -186,8 +198,21 @@ export function ShareDialog({ onClose }: { onClose: () => void }) {
         <div className="share-form">
           <label className="field">
             <span>ラベル（任意・管理用）</span>
-            <input value={label} onChange={(e) => setLabel(e.target.value)} placeholder="例: 取引先A用" />
+            <input
+              value={label}
+              onChange={(e) => setLabel(e.target.value)}
+              placeholder="例: 取引先A用"
+              maxLength={SHARE_LABEL_MAX}
+            />
           </label>
+          {/* Outside the label on purpose, so a count that changes on every
+              keystroke stays out of the input's accessible name. It reports the
+              TRIMMED length, which is what gets saved and what validation
+              counts, so it can read one short of maxLength while the field has
+              stopped accepting whitespace. */}
+          <p className="form-hint">
+            {shareLabelLength(label)} / {SHARE_LABEL_MAX}
+          </p>
           <label className="field checkbox">
             <input type="checkbox" checked={includePrivate} onChange={(e) => setIncludePrivate(e.target.checked)} />
             <span>非公開(private)の予定も busy として含める</span>
