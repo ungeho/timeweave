@@ -36,6 +36,13 @@ import {
   UNAVAILABLE_MESSAGE,
   freeBusyPresentation,
 } from './freeBusyPresentation';
+import {
+  AVAILABLE_EMPTY_MESSAGE,
+  AVAILABLE_INDETERMINATE_MESSAGE,
+  availablePresentation,
+  availableSlots,
+  hasDisclosedAvailable,
+} from './availablePresentation';
 
 type Load =
   | { status: 'loading' }
@@ -66,10 +73,24 @@ export function FreeBusyPage({ token }: { token: string }) {
       .then((result) => {
         // Defensive re-merge: collapse any overlapping/adjacent blocks the RPC
         // did not already merge, so the grid shows availability only.
+        //
+        // Applied to the available set too, and for the identical reason: two
+        // adjacent open blocks rendered separately would disclose that the
+        // owner has two available events there rather than one, which is a
+        // count this page must never leak. Only the 'complete' state is
+        // rewritten -- the other two carry no slots, so there is nothing to
+        // merge and nothing to invent.
         if (!cancelled) {
           setLoad({
             status: 'ok',
-            result: { ...result, slots: mergeFreeBusySlots(result.slots) },
+            result: {
+              ...result,
+              slots: mergeFreeBusySlots(result.slots),
+              available:
+                result.available.status === 'complete'
+                  ? { status: 'complete', slots: mergeFreeBusySlots(result.available.slots) }
+                  : result.available,
+            },
           });
         }
       })
@@ -133,9 +154,34 @@ export function FreeBusyPage({ token }: { token: string }) {
         </p>
       )}
 
-      {load.status === 'ok' && hasNoDisclosedBusy(load.result) && (
-        <p className="banner info">{ACTIVE_EMPTY_MESSAGE}</p>
+      {/* hasNoDisclosedBusy reads the BUSY set alone, which was the whole answer
+          before 0024. It no longer is: a week with available events and no busy
+          ones satisfies it while open time is drawn below, and the notice would
+          then say nothing is shared directly above the blocks being shared. */}
+      {load.status === 'ok' &&
+        hasNoDisclosedBusy(load.result) &&
+        !hasDisclosedAvailable(load.result.available) && (
+          <p className="banner info">{ACTIVE_EMPTY_MESSAGE}</p>
+        )}
+
+      {/* Its own banner, never folded into the busy completeness warning above.
+          The two computations fail independently -- busy can be exact while
+          available is not -- and a single combined sentence would make either
+          one speak for the other. role="alert" matches the busy warning: both
+          say that what is on screen is not the whole picture. */}
+      {load.status === 'ok' && availablePresentation(load.result.available) === 'indeterminate' && (
+        <p className="banner warn" role="alert">{AVAILABLE_INDETERMINATE_MESSAGE}</p>
       )}
+
+      {/* Only for an opted-in link that computed an exact, empty answer. An
+          opted-out link ('hidden') says nothing here, because it was never
+          asked -- "no open time is shared" would be a claim about a question
+          nobody put. */}
+      {load.status === 'ok' &&
+        availablePresentation(load.result.available) === 'slots' &&
+        availableSlots(load.result.available).length === 0 && (
+          <p className="banner info">{AVAILABLE_EMPTY_MESSAGE}</p>
+        )}
 
       {load.status === 'error' && (
         <p className="banner error" role="alert">{load.message}</p>
@@ -148,6 +194,13 @@ export function FreeBusyPage({ token }: { token: string }) {
           {days.map((cell) => {
             const busy = busyForDay(cell.dayKey, timeZone, load.result.slots);
             const hasBusy = busy.allDayCount > 0 || busy.timed.length > 0;
+            // The SAME day-intersection helper as busy: available slots arrive
+            // in the identical wire shape, so clipping them to the day and
+            // matching all-day ones by date is the same problem, already
+            // tested. availableSlots yields [] for every state but 'complete',
+            // so an indeterminate answer cannot produce blocks here.
+            const open = busyForDay(cell.dayKey, timeZone, availableSlots(load.result.available));
+            const hasOpen = open.allDayCount > 0 || open.timed.length > 0;
             return (
               <div key={cell.dayKey} className={`freebusy-day${cell.isToday ? ' today' : ''}`}>
                 <div className="freebusy-day-head">
@@ -163,7 +216,23 @@ export function FreeBusyPage({ token }: { token: string }) {
                       {formatTime(t.start)}–{formatTime(t.end)}
                     </div>
                   ))}
-                  {!hasBusy && <div className="freebusy-free">—</div>}
+                  {/* Available blocks come AFTER the busy ones and carry their
+                      own class and aria-label, so the two are distinguishable
+                      without colour alone. The keys are prefixed because an
+                      available block may legitimately start at the same instant
+                      a busy one does. */}
+                  {open.allDayCount > 0 && (
+                    <div className="freebusy-block allday available" aria-label="終日 空き時間">終日 空き時間</div>
+                  )}
+                  {open.timed.map((t) => (
+                    <div key={`a-${t.start}`} className="freebusy-block available" aria-label="空き時間">
+                      {formatTime(t.start)}–{formatTime(t.end)}
+                    </div>
+                  ))}
+                  {/* The dash means "nothing disclosed for this day", so it
+                      belongs only where neither set put anything. It never
+                      means free -- the footer and the banners carry that. */}
+                  {!hasBusy && !hasOpen && <div className="freebusy-free">—</div>}
                 </div>
               </div>
             );
@@ -171,8 +240,16 @@ export function FreeBusyPage({ token }: { token: string }) {
         </div>
       )}
 
+      {/* The footer has to change when open time is on screen, because the old
+          sentence ("only whether there is an event") stops being true the
+          moment an available block is drawn. It is keyed on the presentation
+          rather than on whether any slot happened to land in this week, so a
+          viewer of an opted-in link gets the same explanation on a week that
+          shows nothing as on one that shows blocks. */}
       <p className="freebusy-note">
-        表示されるのは予定の有無（busy）のみで、内容は共有されません。
+        {load.status === 'ok' && availablePresentation(load.result.available) === 'slots'
+          ? '表示されるのは予定の有無（busy）と、共有者が明示した空き時間（available）だけで、内容は共有されません。空き時間として表示されていない時間が空いているとは限りません。'
+          : '表示されるのは予定の有無（busy）のみで、内容は共有されません。'}
       </p>
     </div>
   );

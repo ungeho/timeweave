@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from 'vitest';
-import type { Availability, ExceptionInput, NewEvent } from '../types/event';
+import type { Availability, ExceptionInput, NewEvent, Visibility } from '../types/event';
 import { DuplicateExceptionError } from '../errors';
 import { LocalStorageEventRepository } from './eventRepository';
 
@@ -149,12 +149,16 @@ describe('LocalStorageEventRepository: availability', () => {
   /** A timed one-off. Only the fields these tests vary are overridable, which
    *  keeps the result narrowed to one arm of NewEvent without a cast. */
   const timed = (
-    over: { title?: string; startAt?: string; endAt?: string; availability?: Availability } = {},
+    over: {
+      title?: string; startAt?: string; endAt?: string;
+      availability?: Availability; visibility?: Visibility;
+    } = {},
   ): NewEvent => ({
     title: '定例会', allDay: false,
     startAt: '2026-08-24T00:00:00.000Z', endAt: '2026-08-24T01:00:00.000Z',
     ...over,
   });
+
 
   it('defaults a create that says nothing to busy', async () => {
     const row = await new LocalStorageEventRepository().create(timed());
@@ -257,5 +261,160 @@ describe('LocalStorageEventRepository: availability', () => {
     const rows = await repo.list();
     expect(rows).toHaveLength(2);
     expect(rows.map((r) => r.availability).sort()).toEqual(['available', 'busy']);
+  });
+});
+
+/**
+ * private + available in local mode: created, edited, stored and read back.
+ *
+ * The combination is legal, and these pin it at the layer that actually writes.
+ * Nothing in the app refuses it, nothing rewrites it on the way in or out, and
+ * the pair survives the edits that touch only one half of it.
+ */
+describe('LocalStorageEventRepository: private + available is legal', () => {
+  const VISIBILITIES: Visibility[] = ['private', 'busy_only', 'public'];
+  const AVAILABILITIES: Availability[] = ['busy', 'available'];
+
+  const timed = (
+    over: { title?: string; visibility?: Visibility; availability?: Availability } = {},
+  ): NewEvent => ({
+    title: '定例会', allDay: false,
+    startAt: '2026-08-24T00:00:00.000Z', endAt: '2026-08-24T01:00:00.000Z',
+    ...over,
+  });
+
+  it('creates a private available event', async () => {
+    const repo = new LocalStorageEventRepository();
+    const row = await repo.create(timed({ visibility: 'private', availability: 'available' }));
+    expect(row.visibility).toBe('private');
+    expect(row.availability).toBe('available');
+  });
+
+  it('creates one when private is only the DEFAULT', async () => {
+    // Omitting visibility means private, so an input naming only availability
+    // produces private+available. This is the ordinary way to make one.
+    const repo = new LocalStorageEventRepository();
+    const row = await repo.create(timed({ availability: 'available' }));
+    expect(row.visibility).toBe('private');
+    expect(row.availability).toBe('available');
+  });
+
+  it('stores all six combinations and reads every one back', async () => {
+    const repo = new LocalStorageEventRepository();
+    for (const v of VISIBILITIES) {
+      for (const a of AVAILABILITIES) {
+        await repo.create(timed({ visibility: v, availability: a }));
+      }
+    }
+    const stored = (await repo.list()).map((r) => `${r.visibility}+${r.availability}`).sort();
+    expect(stored).toEqual([
+      'busy_only+available', 'busy_only+busy',
+      'private+available', 'private+busy',
+      'public+available', 'public+busy',
+    ]);
+  });
+
+  it('survives a round trip through storage, not just the return value', async () => {
+    const repo = new LocalStorageEventRepository();
+    await repo.create(timed({ title: '', availability: 'available' }));
+    // A fresh instance, so the row is genuinely re-read from localStorage.
+    const [reloaded] = await new LocalStorageEventRepository().list();
+    expect(reloaded!.visibility).toBe('private');
+    expect(reloaded!.availability).toBe('available');
+    expect(reloaded!.title).toBe('');
+  });
+
+  it('edits a private busy event into a private available one', async () => {
+    const repo = new LocalStorageEventRepository();
+    const row = await repo.create(timed()); // private + busy
+    const edited = await repo.update(row.id, { availability: 'available' });
+    expect(edited.visibility).toBe('private');
+    expect(edited.availability).toBe('available');
+  });
+
+  it('edits a public available event down to private, keeping it available', async () => {
+    // The patch moves ONLY the visibility. Narrowing who may see an event does
+    // not change whether its time is open, so availability must survive intact.
+    const repo = new LocalStorageEventRepository();
+    const row = await repo.create(timed({ visibility: 'public', availability: 'available' }));
+    const edited = await repo.update(row.id, { visibility: 'private' });
+    expect(edited.visibility).toBe('private');
+    expect(edited.availability).toBe('available');
+  });
+
+  it('edits a private available event back to busy', async () => {
+    const repo = new LocalStorageEventRepository();
+    const row = await repo.create(timed({ availability: 'available' }));
+    const edited = await repo.update(row.id, { availability: 'busy' });
+    expect(edited.visibility).toBe('private');
+    expect(edited.availability).toBe('busy');
+  });
+
+  it('keeps the pair when a patch mentions neither', async () => {
+    const repo = new LocalStorageEventRepository();
+    const row = await repo.create(timed({ availability: 'available' }));
+    const renamed = await repo.update(row.id, { title: '別名' });
+    expect(renamed.visibility).toBe('private');
+    expect(renamed.availability).toBe('available');
+  });
+
+  it('carries the pair onto a private available RECURRENCE master', async () => {
+    const repo = new LocalStorageEventRepository();
+    const master = await repo.create({
+      title: '空き枠', allDay: false,
+      startAt: '2026-08-24T00:00:00.000Z', endAt: '2026-08-24T01:00:00.000Z',
+      rrule: 'FREQ=WEEKLY;BYDAY=MO', timezone: 'Asia/Tokyo',
+      visibility: 'private', availability: 'available',
+    });
+    expect(master.visibility).toBe('private');
+    expect(master.availability).toBe('available');
+    expect(master.rrule).toBe('FREQ=WEEKLY;BYDAY=MO');
+  });
+
+  it('stores a private available EXCEPTION row without touching its master', async () => {
+    const repo = new LocalStorageEventRepository();
+    const master = await repo.create({
+      title: '定例会', allDay: false,
+      startAt: '2026-08-24T00:00:00.000Z', endAt: '2026-08-24T01:00:00.000Z',
+      rrule: 'FREQ=WEEKLY;BYDAY=MO', timezone: 'Asia/Tokyo',
+    });
+    const ex = await repo.createException({
+      ...exceptionInput(master.id), visibility: 'private', availability: 'available',
+    });
+    expect(ex.visibility).toBe('private');
+    expect(ex.availability).toBe('available');
+    const rows = await repo.list();
+    expect(rows.find((r) => r.id === master.id)!.availability).toBe('busy');
+  });
+
+  it('keeps a private available exception through a cancellation in place', async () => {
+    // deleteOccurrence on an existing exception sends exactly
+    // { isCancelled: true }; the tombstone still belongs to an available slot.
+    const repo = new LocalStorageEventRepository();
+    const master = await repo.create({
+      title: '空き枠', allDay: false,
+      startAt: '2026-08-24T00:00:00.000Z', endAt: '2026-08-24T01:00:00.000Z',
+      rrule: 'FREQ=WEEKLY;BYDAY=MO', timezone: 'Asia/Tokyo',
+      visibility: 'private', availability: 'available',
+    });
+    const ex = await repo.createException({
+      ...exceptionInput(master.id), visibility: 'private', availability: 'available',
+    });
+    const cancelled = await repo.update(ex.id, { isCancelled: true });
+    expect(cancelled.isCancelled).toBe(true);
+    expect(cancelled.visibility).toBe('private');
+    expect(cancelled.availability).toBe('available');
+  });
+
+  it('stores an all-day private available event', async () => {
+    const repo = new LocalStorageEventRepository();
+    const row = await repo.create({
+      title: '', allDay: true,
+      startDate: '2026-08-24', endDate: '2026-08-25',
+      visibility: 'private', availability: 'available',
+    });
+    expect(row.allDay).toBe(true);
+    expect(row.visibility).toBe('private');
+    expect(row.availability).toBe('available');
   });
 });

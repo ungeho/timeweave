@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import type { ShareLink } from '../../types/share';
-import { canDeleteShareLink, shareLinkStatus, visibleShareLinks } from './shareLinkState';
+import {
+  canDeleteShareLink,
+  canSetShareAvailable,
+  shareLinkStatus,
+  visibleShareLinks,
+} from './shareLinkState';
 
 /**
  * These pin migration 0015's delete predicate on the client side. The case that
@@ -125,5 +130,68 @@ describe('visibleShareLinks', () => {
   it('can end up empty, which is what a filtered list with nothing revoked means', () => {
     expect(visibleShareLinks([active, expired], true)).toEqual([]);
     expect(visibleShareLinks([], true)).toEqual([]);
+  });
+});
+
+/**
+ * Which rows may offer the available switch.
+ *
+ * 0022's set_share_available updates only `revoked_at is null and (expires_at
+ * is null or expires_at > now())`. The trap is the same one canDeleteShareLink
+ * documents, pointing the other way: delete needs a REVOKED row and ignores
+ * expiry, this needs a LIVE one and does not. Getting it backwards would put a
+ * switch on rows the RPC silently refuses.
+ */
+describe('canSetShareAvailable', () => {
+  const NOW = Date.parse('2026-09-10T00:00:00Z');
+  const link = (over: Partial<ShareLink> = {}): ShareLink => ({
+    id: 'l1', label: null, includePrivate: true, shareAvailable: false,
+    expiresAt: null, revokedAt: null, createdAt: '2026-09-01T00:00:00Z',
+    ...over,
+  });
+
+  it('allows an active link', () => {
+    expect(canSetShareAvailable(link(), NOW)).toBe(true);
+  });
+
+  it('allows a link whose expiry is still in the future', () => {
+    expect(canSetShareAvailable(link({ expiresAt: '2026-09-11T00:00:00Z' }), NOW)).toBe(true);
+  });
+
+  it('refuses a revoked link', () => {
+    expect(canSetShareAvailable(link({ revokedAt: '2026-09-05T00:00:00Z' }), NOW)).toBe(false);
+  });
+
+  it('refuses an EXPIRED link, unlike canDeleteShareLink', () => {
+    // The one that is easy to get wrong: an expired link still has
+    // revoked_at = null, so a guard copied from the delete rule would call it
+    // eligible and render a switch 0022 answers with a bare false.
+    const expired = link({ expiresAt: '2026-09-09T00:00:00Z' });
+    expect(canSetShareAvailable(expired, NOW)).toBe(false);
+    expect(canDeleteShareLink(expired)).toBe(false);
+  });
+
+  it('refuses a link expiring exactly now', () => {
+    // 0022 updates while `expires_at > now()`, so equality is already expired.
+    expect(canSetShareAvailable(link({ expiresAt: '2026-09-10T00:00:00Z' }), NOW)).toBe(false);
+  });
+
+  it('is exactly the active state, for every row', () => {
+    const rows = [
+      link(),
+      link({ expiresAt: '2026-09-11T00:00:00Z' }),
+      link({ expiresAt: '2026-09-09T00:00:00Z' }),
+      link({ revokedAt: '2026-09-05T00:00:00Z' }),
+      link({ revokedAt: '2026-09-05T00:00:00Z', expiresAt: '2026-09-09T00:00:00Z' }),
+    ];
+    for (const r of rows) {
+      expect(canSetShareAvailable(r, NOW)).toBe(shareLinkStatus(r, NOW) === 'active');
+    }
+  });
+
+  it('is independent of the setting’s current value', () => {
+    // The switch is offered for turning it OFF as much as on.
+    expect(canSetShareAvailable(link({ shareAvailable: true }), NOW)).toBe(true);
+    expect(canSetShareAvailable(link({ shareAvailable: false }), NOW)).toBe(true);
   });
 });

@@ -51,6 +51,24 @@ export function canDeleteShareLink(link: ShareLink): boolean {
 }
 
 /**
+ * Whether set_share_available would actually change this row.
+ *
+ * Mirrors 0022's UPDATE predicate, which is `revoked_at is null and (expires_at
+ * is null or expires_at > now())` -- precisely the definition of 'active' here,
+ * expiry included. So unlike canDeleteShareLink, this one DOES consider expiry,
+ * and the difference is not an inconsistency: delete requires a revoked row,
+ * this requires a live one, and they are opposite ends of the same lifecycle.
+ *
+ * The lesson is the one that module's header records. The RPC refuses with a
+ * bare `false` that is indistinguishable from "no such row", so a toggle
+ * rendered on an expired link would be a control that silently does nothing and
+ * then reports a refusal the owner cannot act on. It is not rendered instead.
+ */
+export function canSetShareAvailable(link: ShareLink, now: number): boolean {
+  return shareLinkStatus(link, now) === 'active';
+}
+
+/**
  * The rows the list shows. `revokedOnly` is the owner's filter, applied to rows
  * already fetched -- list_share_links takes no arguments and orders by
  * created_at desc, so the revoked rows worth deleting sit at the bottom of a

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { FreeBusySlot } from '../../types/share';
 import { dayStartInstantIso } from '../../utils/timezone';
 import { busyForDay, hasNoDisclosedBusy } from './freeBusyLayout';
+import { availableSlots } from './availablePresentation';
 
 const TZ = 'Asia/Tokyo';
 
@@ -99,3 +100,80 @@ describe('hasNoDisclosedBusy — an empty COMPLETE answer is not a claim of avai
 function addHours(iso: string, hours: number): string {
   return new Date(Date.parse(iso) + hours * 3_600_000).toISOString();
 }
+
+/**
+ * Available slots laid out onto days.
+ *
+ * busyForDay is reused verbatim for them: 0024 returns the identical wire
+ * shape, so clipping a timed block to the viewer's day and matching an all-day
+ * one by calendar date is the same problem, already solved and already tested
+ * above. These pin the two things that are NOT inherited from that -- that the
+ * reuse keeps timed and all-day apart, and that the states with no slots can
+ * never put a block on the grid.
+ */
+describe('availability slots on a day, via busyForDay', () => {
+  const TZ = 'Asia/Tokyo';
+
+  it('keeps a timed available slot timed, clipped to the day', () => {
+    const day = busyForDay('2026-09-01', TZ, [
+      { allDay: false, start: '2026-09-01T00:00:00.000Z', end: '2026-09-01T03:00:00.000Z' },
+    ]);
+    expect(day.allDayCount).toBe(0);
+    expect(day.timed).toHaveLength(1);
+  });
+
+  it('keeps an all-day available slot all-day, with no timezone conversion', () => {
+    const day = busyForDay('2026-09-02', TZ, [
+      { allDay: true, startDate: '2026-09-02', endDate: '2026-09-03' },
+    ]);
+    expect(day.allDayCount).toBe(1);
+    expect(day.timed).toHaveLength(0);
+  });
+
+  it('honours the exclusive end date of an all-day available slot', () => {
+    const slots: FreeBusySlot[] = [{ allDay: true, startDate: '2026-09-02', endDate: '2026-09-03' }];
+    expect(busyForDay('2026-09-02', TZ, slots).allDayCount).toBe(1);
+    expect(busyForDay('2026-09-03', TZ, slots).allDayCount).toBe(0);
+  });
+
+  it('draws nothing for the states that carry no slots', () => {
+    // availableSlots returns [] for not_requested and indeterminate, so the
+    // grid cannot show open time for either -- structurally, not by a rule the
+    // component has to remember.
+    for (const state of [{ status: 'not_requested' }, { status: 'indeterminate' }] as const) {
+      const day = busyForDay('2026-09-01', TZ, availableSlots(state));
+      expect(day.allDayCount).toBe(0);
+      expect(day.timed).toHaveLength(0);
+    }
+  });
+
+  it('draws nothing for a complete answer that found nothing', () => {
+    const day = busyForDay('2026-09-01', TZ, availableSlots({ status: 'complete', slots: [] }));
+    expect(day.allDayCount).toBe(0);
+    expect(day.timed).toHaveLength(0);
+  });
+
+  it('lays busy and available out independently on the same day', () => {
+    // The page calls busyForDay twice, once per set. Neither may absorb the
+    // other: a day can hold both a busy block and an available one.
+    const busy = busyForDay('2026-09-01', TZ, [
+      { allDay: false, start: '2026-09-01T01:00:00.000Z', end: '2026-09-01T02:00:00.000Z' },
+    ]);
+    const open = busyForDay('2026-09-01', TZ, availableSlots({
+      status: 'complete',
+      slots: [{ allDay: false, start: '2026-09-01T05:00:00.000Z', end: '2026-09-01T06:00:00.000Z' }],
+    }));
+    expect(busy.timed).toHaveLength(1);
+    expect(open.timed).toHaveLength(1);
+    expect(busy.timed[0]!.start).not.toBe(open.timed[0]!.start);
+  });
+
+  it('does not treat the gap between busy blocks as available', () => {
+    // The invariant the feature rests on, stated where the grid is built: a day
+    // with busy blocks and an empty available set has NO open blocks, however
+    // much unoccupied time lies between them.
+    const open = busyForDay('2026-09-01', TZ, availableSlots({ status: 'complete', slots: [] }));
+    expect(open.timed).toHaveLength(0);
+    expect(open.allDayCount).toBe(0);
+  });
+});

@@ -84,13 +84,18 @@ export type EventInsert = Omit<
  * explicit null rather than an absent column.
  */
 export function eventToInsert(input: NewEvent): EventInsert {
+  const visibility = input.visibility ?? 'private';
+  // Absent means 'busy', exactly as absent visibility means 'private'. The two
+  // defaults are independent, and so are the values: all six combinations of
+  // visibility and availability are legal, private+available included.
+  const availability = input.availability ?? 'busy';
+
   const common = {
     title: input.title,
     description: input.description ?? null,
     category: input.category ?? null,
-    visibility: input.visibility ?? 'private',
-    // Absent means 'busy', exactly as absent visibility means 'private'.
-    availability: input.availability ?? 'busy',
+    visibility,
+    availability,
     rrule: input.rrule ?? null,
     recurrence_id: null,
     recurrence_slot_start: null,
@@ -176,7 +181,13 @@ const FIELD_TO_COLUMN: Record<keyof EventRow, keyof EventDbRow> = {
   updatedAt: 'updated_at',
 };
 
-/** Translate a partial EventRow patch into snake_case DB columns for UPDATE. */
+/**
+ * Translate a partial EventRow patch into snake_case DB columns for UPDATE.
+ *
+ * `visibility` and `availability` are carried through independently: a patch
+ * may move either one, or both, in any direction, because every combination of
+ * the two is a legal row.
+ */
 export function eventPatchToColumns(patch: Partial<EventRow>): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   for (const key of Object.keys(patch) as (keyof EventRow)[]) {

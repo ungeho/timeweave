@@ -11,6 +11,7 @@ import { requireSupabase } from '../lib/supabase';
 import { mapFreeBusyError } from './freeBusyError';
 import { mapShareLinkError } from './shareLinkError';
 import type {
+  AvailableResult,
   CreatedShareLink,
   FreeBusyResult,
   FreeBusySlot,
@@ -159,12 +160,50 @@ interface FreeBusyDbResult {
   link_state?: string | null;
   complete?: boolean;
   slots?: FreeBusySlotDb[];
+  /**
+   * 0024. Typed as loosely as link_state is, and for the same three reasons: it
+   * arrives from the wire, a pre-0024 backend omits it, and a later backend
+   * could introduce a status this build has never heard of. Narrowing happens
+   * once, in mapAvailable.
+   */
+  available?: { status?: string | null; slots?: FreeBusySlotDb[] } | null;
 }
 
 function mapSlot(s: FreeBusySlotDb): FreeBusySlot {
   return s.all_day
     ? { allDay: true, startDate: s.start_date, endDate: s.end_date }
     : { allDay: false, start: s.start, end: s.end };
+}
+
+/**
+ * Narrow 0024's `available` object to the app's three-state union.
+ *
+ * FAIL-CLOSED, IN THE ONLY DIRECTION THAT IS SAFE HERE. Everything unrecognised
+ * -- a missing field, null, a status this build does not know, a 'complete' with
+ * no usable slots array -- becomes `not_requested`, which renders NOTHING.
+ *
+ * The asymmetry with link_state's normalisation is deliberate and runs the other
+ * way. There, the unknown case had to read as 'active' because hiding a working
+ * calendar was the worse mistake. Here the worse mistake is showing availability
+ * that was never computed: a viewer who sees open time books it, and an invented
+ * slot costs the owner a real meeting. Saying nothing costs only the feature.
+ *
+ * `indeterminate` deliberately carries no slots, matching 0024 -- it is the
+ * state that says open time could not be stated exactly, so attaching blocks to
+ * it would contradict the answer itself.
+ */
+function mapAvailable(a: FreeBusyDbResult['available']): AvailableResult {
+  if (a?.status === 'indeterminate') return { status: 'indeterminate' };
+  if (a?.status === 'complete') {
+    // An opted-in link that found nothing answers complete with an empty array,
+    // and that is a real answer, so the empty case is NOT folded back into
+    // not_requested. A non-array where the array belongs is a malformed
+    // response, though, and reads as nothing requested rather than as "none".
+    return Array.isArray(a.slots)
+      ? { status: 'complete', slots: a.slots.map(mapSlot) }
+      : { status: 'not_requested' };
+  }
+  return { status: 'not_requested' };
 }
 
 /**
@@ -204,7 +243,12 @@ export async function getFreeBusy(
     // answer carries complete=true and slots=[], so reading it as active just
     // reproduces what the page did before 0023 existed.
     linkState: result.link_state === 'unavailable' ? 'unavailable' : 'active',
+    // Busy, exactly as before 0024. These two keep meaning the busy set alone.
     complete: Boolean(result.complete),
     slots: (result.slots ?? []).map(mapSlot),
+    // 0023's unavailable answer carries no `available` key, so an unreadable
+    // link lands on not_requested here -- which is what the page needs, since
+    // it must disclose nothing at all about such a link.
+    available: mapAvailable(result.available),
   };
 }

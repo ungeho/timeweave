@@ -6,7 +6,7 @@ import {
   exceptionToInsert,
   rowToEvent,
 } from './eventMapping';
-import type { Availability, ExceptionInput, NewEvent } from '../types/event';
+import type { Availability, ExceptionInput, NewEvent, Visibility } from '../types/event';
 
 /**
  * Reading tolerates a row written before the column existed; writing always
@@ -74,7 +74,7 @@ describe('write payloads carry availability', () => {
    * union and no cast is needed to hide a shape the repository would reject.
    */
   const timed = (
-    over: { title?: string; availability?: Availability } = {},
+    over: { title?: string; availability?: Availability; visibility?: Visibility } = {},
   ): NewEvent => ({
     title: '定例会',
     allDay: false,
@@ -83,7 +83,10 @@ describe('write payloads carry availability', () => {
     ...over,
   });
 
-  const exception = (availability: Availability): ExceptionInput => ({
+  const exception = (
+    availability: Availability,
+    visibility: Visibility = 'private',
+  ): ExceptionInput => ({
     recurrenceId: 'm',
     recurrenceSlotStart: '2026-08-31T00:00:00.000Z',
     recurrenceSlotDate: null,
@@ -96,7 +99,7 @@ describe('write payloads carry availability', () => {
     title: '個別変更',
     description: null,
     category: null,
-    visibility: 'private',
+    visibility,
     availability,
   });
 
@@ -109,7 +112,9 @@ describe('write payloads carry availability', () => {
   });
 
   it('eventToInsert carries an explicit availability', () => {
-    expect(eventToInsert(timed({ availability: 'available' })).availability).toBe('available');
+    expect(
+      eventToInsert(timed({ availability: 'available' })).availability,
+    ).toBe('available');
     expect(eventToInsert(timed({ availability: 'busy' })).availability).toBe('busy');
   });
 
@@ -154,5 +159,107 @@ describe('write payloads carry availability', () => {
     // recurrenceOps sends these two verbatim; neither should touch the column.
     expect(Object.keys(eventPatchToColumns({ isCancelled: true }))).not.toContain('availability');
     expect(Object.keys(eventPatchToColumns({ timezone: 'Asia/Tokyo' }))).not.toContain('availability');
+  });
+});
+
+/**
+ * visibility and availability are INDEPENDENT, and all six combinations are
+ * legal -- private+available included.
+ *
+ * Pinned explicitly because the pair reads like it ought to have a rule. It
+ * does not. `visibility` decides how much a share link may disclose,
+ * `availability` decides whether the time is open, and a private available
+ * event is a coherent thing to store: open time the owner is willing to publish
+ * only through links that are trusted with their private events. Whether it
+ * ever reaches an anonymous viewer is decided downstream, by the link's
+ * include_private and share_available and by 0024's own filtering -- never by
+ * refusing to store the row.
+ */
+describe('visibility and availability are independent on the write paths', () => {
+  const VISIBILITIES: Visibility[] = ['private', 'busy_only', 'public'];
+  const AVAILABILITIES: Availability[] = ['busy', 'available'];
+
+  const timedWith = (visibility: Visibility, availability: Availability): NewEvent => ({
+    title: '予定', allDay: false,
+    startAt: '2026-08-24T00:00:00.000Z', endAt: '2026-08-24T01:00:00.000Z',
+    visibility, availability,
+  });
+
+  const exception = (availability: Availability, visibility: Visibility): ExceptionInput => ({
+    recurrenceId: 'm',
+    recurrenceSlotStart: '2026-08-31T00:00:00.000Z',
+    recurrenceSlotDate: null,
+    isCancelled: false,
+    allDay: false,
+    startAt: '2026-08-31T06:00:00.000Z',
+    endAt: '2026-08-31T07:00:00.000Z',
+    startDate: null,
+    endDate: null,
+    title: '個別変更',
+    description: null,
+    category: null,
+    visibility,
+    availability,
+  });
+
+  it('eventToInsert writes every one of the six combinations', () => {
+    for (const v of VISIBILITIES) {
+      for (const a of AVAILABILITIES) {
+        const insert = eventToInsert(timedWith(v, a));
+        expect(insert.visibility).toBe(v);
+        expect(insert.availability).toBe(a);
+      }
+    }
+  });
+
+  it('eventToInsert writes private+available, the combination that looks special', () => {
+    const insert = eventToInsert(timedWith('private', 'available'));
+    expect(insert.visibility).toBe('private');
+    expect(insert.availability).toBe('available');
+  });
+
+  it('eventToInsert defaults to private+busy, and an available event keeps that private default', () => {
+    // Omitting visibility means 'private'. An input that asks only for
+    // availability therefore produces private+available, and must still write.
+    const defaulted = eventToInsert({
+      title: '空き', allDay: false,
+      startAt: '2026-08-24T00:00:00.000Z', endAt: '2026-08-24T01:00:00.000Z',
+      availability: 'available',
+    });
+    expect(defaulted.visibility).toBe('private');
+    expect(defaulted.availability).toBe('available');
+  });
+
+  it('exceptionToInsert carries every combination through', () => {
+    for (const v of VISIBILITIES) {
+      for (const a of AVAILABILITIES) {
+        const insert = exceptionToInsert(exception(a, v));
+        expect(insert.visibility).toBe(v);
+        expect(insert.availability).toBe(a);
+      }
+    }
+  });
+
+  it('eventPatchToColumns maps both columns, in every combination', () => {
+    for (const v of VISIBILITIES) {
+      for (const a of AVAILABILITIES) {
+        const cols = eventPatchToColumns({ visibility: v, availability: a });
+        expect(cols.visibility).toBe(v);
+        expect(cols.availability).toBe(a);
+      }
+    }
+  });
+
+  it('eventPatchToColumns moves ONE of the two without the other', () => {
+    // An edit that only changes the visibility of an available event, and one
+    // that only makes a private event available. Neither needs the other key.
+    expect(eventPatchToColumns({ visibility: 'private' })).toEqual({ visibility: 'private' });
+    expect(eventPatchToColumns({ availability: 'available' })).toEqual({ availability: 'available' });
+  });
+
+  it('rowToEvent reads a stored private+available row back unchanged', () => {
+    const row = rowToEvent(dbRow({ visibility: 'private', availability: 'available' }));
+    expect(row.visibility).toBe('private');
+    expect(row.availability).toBe('available');
   });
 });

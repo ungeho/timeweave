@@ -361,6 +361,55 @@ Phase 1 は `LocalStorageEventRepository`、Phase 2 で `SupabaseEventRepository
   タイムゾーン変換しない。両窓は `FreeBusyPage` が同一の表示レンジから生成する。
 - **`include_private`**: `false` の共有リンクでは private の予定を busy 集合から除外する。
   busy 抽出と後述の `complete` 判定の**両方**に同じ条件が掛かる。
+- **`share_available`（0022/0024）**: `true` の共有リンクだけが、オーナーが
+  `availability = 'available'` として明示登録した時間を `available` として返す。
+  `include_private` とは**完全に独立**で、4通りすべてが有効。既定は `false`。
+
+### Available 共有（0024）
+
+**空き時間は busy の裏返しではない。** 返すのはオーナーが明示的に
+「空き時間(Available)」として登録した予定だけで、そこから busy を差し引いた結果である。
+予定が入っていない時間が自動的に空き時間になることは**ない**。クライアントが
+`slots` の隙間から空き時間を逆算することも禁止で、`FreeBusyResult` では busy
+（`complete` / `slots`）と available を別フィールドに分けている。
+
+`available` は3状態を取り、それぞれ表示が異なる。
+
+| 状態 | 意味 | UI |
+|---|---|---|
+| `not_requested` | リンクが opt-in していない（または 0024 以前のバックエンド） | 何も表示しない |
+| `indeterminate` | opt-in 済みだが、展開できない繰り返しがあり正確に確定できない | 「判定できませんでした」と表示し、**枠は一切描かない** |
+| `complete` | 正確に計算できた。空配列も**正当な回答** | 返された枠を表示。空なら「共有されている空き時間はありません」 |
+
+`indeterminate` を「空き時間なし」と表示してはならない。「わからない」を
+カレンダーについての事実の主張に変えてしまうため。busy の `complete` と
+available の完全性は**独立に**決まり、一方がもう一方を代弁することはない。
+
+未知のステータスや欠損は `not_requested`（＝何も表示しない）に倒す。
+`link_state` が unknown を `active` に倒す（fail-open）のとは**逆向き**で、
+ここでは「計算していない空き時間を見せる」方が重大な誤りであるため。
+
+### `availability` と `visibility` の組み合わせ
+
+`visibility` は「共有リンクがどこまで開示してよいか」、`availability` は
+「その時間に連絡がつくか」を表す**独立した属性**で、**3 × 2 の全6組み合わせが有効**。
+`private + available` も含めて、アプリが拒否する組み合わせは無い。
+
+| | `busy` | `available` |
+|---|---|---|
+| `private` | 可（既定） | 可 |
+| `busy_only` | 可 | 可 |
+| `public` | 可 | 可 |
+
+`private + available` は矛盾ではなく、「空き時間ではあるが、private を信頼する
+リンクにだけ開示してよい時間」を意味する。0024 のヘルパーは Available ソース
+6箇所すべてに `(v_include_private or e.visibility <> 'private')` を持ち、
+busy core と**同じ形で** private を扱うため、この行は
+`include_private = false` のリンクでは Available 集合から除外される。
+
+**イベントが `available` であることは、匿名公開を意味しない。** 実際に開示されるかは、
+リンクの `include_private` と `share_available`、および 0024 の RPC 仕様で決まる。
+イベント属性は「開示してよいか」の材料にすぎず、開示の判断そのものは DB 側にある。
 - **Referrer 抑止**: 共有 URL にトークンが含まれるため、`index.html` に
   `<meta name="referrer" content="no-referrer">` を置き、さらに `vercel.json` で
   `Referrer-Policy: no-referrer` を**全レスポンス**に付与する（下記「デプロイ構成（Vercel）」）。

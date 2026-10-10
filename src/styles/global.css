@@ -700,6 +700,23 @@ body {
   font-size: 0.75rem;
   color: var(--text-muted);
 }
+/* The available switch, on its own line under the row's summary. Rendered only
+   on active links (0022 refuses the rest), so it needs none of .inactive's
+   dimming rules. The disabled state is what a toggle in flight looks like --
+   the control never moves ahead of the server. */
+.share-link-toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+.share-link-toggle input:disabled,
+.share-link-toggle:has(input:disabled) {
+  cursor: default;
+  opacity: 0.6;
+}
 /* An expired link still has revoked_at = null, so 0015 will not delete it. It
    is greyed out like a revoked one and carries no delete button, which without
    this line would read as an app that simply forgot to offer one. */
@@ -806,6 +823,36 @@ body {
   background: var(--bg-muted);
   color: var(--text);
   border: 1px solid var(--border);
+}
+/* ---------- available blocks on the share page ----------
+   An AVAILABLE block must not read as a weaker busy block, so it inverts the
+   busy one rather than tinting it: busy is a filled --accent bar, available is
+   the page's own surface inside an --accent outline. Filled versus outlined is
+   the difference a viewer sees first, and it survives greyscale.
+     It then carries the SAME diagonal hatch the owner's calendar gives an
+   available event, so the two views share one visual word for the idea. The
+   stripes are the belt to the outline's braces: two independent cues, neither
+   of which is hue, which is what keeps busy and available apart for a
+   colour-blind viewer. The aria-label is the third, for a viewer who sees
+   neither.
+     Lighter and wider than the owner-side values: these stripes sit on the
+   page background rather than on a saturated category fill, where the same
+   strength would read as noise. */
+.freebusy-block.available {
+  background-color: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--accent);
+  background-image: repeating-linear-gradient(
+    45deg,
+    color-mix(in oklab, var(--accent) 16%, transparent) 0 2px,
+    transparent 2px 8px
+  );
+}
+/* The all-day variant would otherwise take .allday's muted fill and border,
+   since both classes are present and that rule comes first. */
+.freebusy-block.allday.available {
+  background-color: var(--bg);
+  border-color: var(--accent);
 }
 .freebusy-free {
   color: var(--text-muted);

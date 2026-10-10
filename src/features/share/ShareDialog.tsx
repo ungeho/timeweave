@@ -21,11 +21,17 @@ import {
   deleteShareLink,
   listShareLinks,
   revokeShareLink,
+  setShareAvailable,
 } from '../../repositories/shareRepository';
 import type { CreatedShareLink, ShareLink } from '../../types/share';
 import { isoFromDatetimeLocalValue } from '../../utils/datetime';
 import { SHARE_LABEL_MAX, labelLengthError, shareLabelLength } from './shareLinkLabel';
-import { canDeleteShareLink, shareLinkStatus, visibleShareLinks } from './shareLinkState';
+import {
+  canDeleteShareLink,
+  canSetShareAvailable,
+  shareLinkStatus,
+  visibleShareLinks,
+} from './shareLinkState';
 
 const shareUrl = (token: string) => `${window.location.origin}/s/${token}`;
 
@@ -41,6 +47,21 @@ const CONFIRM_DELETE = 'このリンクの記録を完全に削除します。�
  */
 const DELETE_REFUSED = 'このリンクはすでに削除されたか、削除できない状態です。一覧を更新しました。';
 
+/**
+ * 0022 returns false for a row that is absent, someone else's, revoked or
+ * expired, without distinguishing them -- the same deliberate opacity 0015 has.
+ * The toggle is only rendered on the owner's ACTIVE rows, so in practice this
+ * means the row stopped being active between the render and the click: expired
+ * on its own, or revoked in another tab.
+ *
+ * It is NOT reported as an error, because nothing failed; and it is NOT treated
+ * as success, because the setting did not change. The list is refreshed so the
+ * row redraws in whatever state it is actually in, and the switch returns to
+ * the server's value rather than the one that was clicked.
+ */
+const AVAILABLE_REFUSED =
+  'このリンクの設定を変更できませんでした。期限切れか失効している可能性があります。一覧を更新しました。';
+
 export function ShareDialog({ onClose }: { onClose: () => void }) {
   const [links, setLinks] = useState<ShareLink[]>([]);
   const [loading, setLoading] = useState(true);
@@ -49,6 +70,10 @@ export function ShareDialog({ onClose }: { onClose: () => void }) {
 
   const [label, setLabel] = useState('');
   const [includePrivate, setIncludePrivate] = useState(true);
+  // Defaults to OFF, unlike includePrivate. Sharing busy time is what a share
+  // link is for, so including private events in it is the expected shape; open
+  // time is a second, additive disclosure the owner has to choose.
+  const [shareAvailableNew, setShareAvailableNew] = useState(false);
   const [expiresLocal, setExpiresLocal] = useState('');
   const [creating, setCreating] = useState(false);
   const [justCreated, setJustCreated] = useState<CreatedShareLink | null>(null);
@@ -57,11 +82,19 @@ export function ShareDialog({ onClose }: { onClose: () => void }) {
   const [revokedOnly, setRevokedOnly] = useState(false);
   const [confirmingDeleteId, setConfirmingDeleteId] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [togglingId, setTogglingId] = useState<string | null>(null);
 
-  // A delete in flight disables every other mutating control, so a second
-  // request can never be issued against a list that is about to be replaced.
-  const busy = deletingId !== null;
+  // A delete OR an available-toggle in flight disables every other mutating
+  // control, so a second request can never be issued against a list that is
+  // about to be replaced.
+  const busy = deletingId !== null || togglingId !== null;
   const deletingRef = useRef<string | null>(null);
+  // Same door as deletingRef, and needed for the same reason: two clicks
+  // delivered in one tick both see the render that disabled nothing yet. Here
+  // the cost is worse than a misleading message -- the two calls would carry
+  // opposite values, and whichever the server applied last would win, leaving
+  // the switch showing a setting the owner did not choose.
+  const togglingRef = useRef<string | null>(null);
 
   /**
    * Any reload invalidates a pending confirmation: the row it referred to may
@@ -103,14 +136,25 @@ export function ShareDialog({ onClose }: { onClose: () => void }) {
     }
     setCreating(true);
     try {
+      // Set AT CREATION, in the same RPC call, rather than created and then
+      // toggled. create_share_link takes p_share_available (0022), so the link
+      // never exists in a state the owner did not ask for -- a follow-up
+      // set_share_available would leave a window in which the token is already
+      // valid and the setting is still the default, and would need its own
+      // failure story for a link that had already been handed back.
       const created = await createShareLink({
         label: label.trim() || null,
         includePrivate,
         expiresAt: expiresLocal ? isoFromDatetimeLocalValue(expiresLocal) : null,
+        shareAvailable: shareAvailableNew,
       });
       setJustCreated(created);
       setLabel('');
       setExpiresLocal('');
+      // includePrivate and shareAvailable deliberately KEEP their values: an
+      // owner creating several links usually wants the same disclosure settings
+      // for them, and resetting would quietly turn the choice off between two
+      // creations.
       await refresh();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -160,6 +204,45 @@ export function ShareDialog({ onClose }: { onClose: () => void }) {
     } finally {
       deletingRef.current = null;
       setDeletingId(null);
+    }
+  };
+
+  /**
+   * Turn available-sharing on or off for one existing link.
+   *
+   * NOTHING IS UPDATED OPTIMISTICALLY. The switch keeps showing the server's
+   * value until the list has been refetched, so what the owner reads is always
+   * what the database holds -- the one property that matters for a control that
+   * decides how much of their calendar strangers can see. The cost is that the
+   * switch does not move until the round trip completes, which is why it is
+   * disabled rather than left looking unresponsive.
+   *
+   * The three outcomes are kept apart on purpose:
+   *   true   the setting is now `next`; the refreshed row shows it.
+   *   false  nothing changed and nothing failed (see AVAILABLE_REFUSED). The
+   *          list is still refreshed, because the most likely cause is that the
+   *          row is no longer active and the list is out of date.
+   *   throw  the call did not land -- 28000 from an expired session, or the
+   *          network. The list is left exactly as it was, so the owner is still
+   *          looking at the link they were acting on, and nothing is retried.
+   */
+  const handleToggleAvailable = async (l: ShareLink) => {
+    if (togglingRef.current !== null || deletingRef.current !== null) return;
+    const next = !l.shareAvailable;
+    togglingRef.current = l.id;
+    setError(null);
+    setNotice(null);
+    setConfirmingDeleteId(null);
+    setTogglingId(l.id);
+    try {
+      const applied = await setShareAvailable(l.id, next);
+      await refresh();
+      if (!applied) setNotice(AVAILABLE_REFUSED);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      togglingRef.current = null;
+      setTogglingId(null);
     }
   };
 
@@ -217,6 +300,23 @@ export function ShareDialog({ onClose }: { onClose: () => void }) {
             <input type="checkbox" checked={includePrivate} onChange={(e) => setIncludePrivate(e.target.checked)} />
             <span>非公開(private)の予定も busy として含める</span>
           </label>
+          {/* A SECOND, INDEPENDENT disclosure, not a refinement of the one
+              above. include_private decides whether private events count
+              towards busy at all; this decides whether time the owner marked
+              available is published. All four combinations are legal and the
+              database treats them as orthogonal, so the two sit as two plain
+              checkboxes with no nesting or disabling between them. */}
+          <label className="field checkbox">
+            <input
+              type="checkbox"
+              checked={shareAvailableNew}
+              onChange={(e) => setShareAvailableNew(e.target.checked)}
+            />
+            <span>「空き時間(Available)」として登録した予定も公開する</span>
+          </label>
+          <p className="form-hint">
+            公開されるのは、予定を「空き時間」として明示的に登録した時間だけです。予定が入っていない時間が自動的に空き時間として公開されることはありません。
+          </p>
           <label className="field">
             <span>有効期限（任意）</span>
             <input type="datetime-local" value={expiresLocal} onChange={(e) => setExpiresLocal(e.target.value)} />
@@ -256,6 +356,7 @@ export function ShareDialog({ onClose }: { onClose: () => void }) {
                 const status = shareLinkStatus(l, now);
                 const confirming = confirmingDeleteId === l.id;
                 const deleting = deletingId === l.id;
+                const toggling = togglingId === l.id;
                 return (
                   <li
                     key={l.id}
@@ -273,8 +374,28 @@ export function ShareDialog({ onClose }: { onClose: () => void }) {
                       <span className="share-link-status">{STATUS_LABEL[status]}</span>
                       <span className="share-link-sub">
                         {l.includePrivate ? 'private含む' : 'private除外'}
+                        {` / ${l.shareAvailable ? '空き時間を公開' : '空き時間は非公開'}`}
                         {l.expiresAt ? ` / 期限 ${new Date(l.expiresAt).toLocaleString()}` : ''}
                       </span>
+                      {/* Only on rows 0022 would actually update. An expired or
+                          revoked link shows its setting in the line above but
+                          offers no switch, because the RPC refuses those with a
+                          bare false -- the same reason the delete button is
+                          absent from rows 0015 would refuse. */}
+                      {canSetShareAvailable(l, now) && (
+                        <label className="share-link-toggle">
+                          <input
+                            type="checkbox"
+                            checked={l.shareAvailable}
+                            disabled={busy}
+                            onChange={() => void handleToggleAvailable(l)}
+                          />
+                          <span>
+                            空き時間(Available)を公開
+                            {toggling ? '（更新中…）' : ''}
+                          </span>
+                        </label>
+                      )}
                       {status === 'expired' && (
                         <span className="share-link-hint">
                           期限切れですが失効していません。削除するには、先に「失効」してください。

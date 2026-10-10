@@ -287,13 +287,16 @@ describe('getFreeBusy', () => {
         { allDay: true, startDate: '2026-09-01', endDate: '2026-09-02' },
         { allDay: false, start: '2026-09-01T09:00:00+00:00', end: '2026-09-01T10:00:00+00:00' },
       ],
+      // 0024 added `available`; this response predates it, and the field's
+      // absence reads as not_requested -- the state that renders nothing.
+      available: { status: 'not_requested' },
     });
   });
 
   it('defaults to complete=false-safe empty when data is empty', async () => {
     h.state.data = {};
     const res = await getFreeBusy('t', 'a', 'b', 'c', 'd');
-    expect(res).toEqual({ linkState: 'active', complete: false, slots: [] });
+    expect(res).toEqual({ linkState: 'active', complete: false, slots: [], available: { status: 'not_requested' } });
   });
 
   it('propagates the 22023 over-range error', async () => {
@@ -326,7 +329,7 @@ describe('getFreeBusy', () => {
   it('reads link_state unavailable', async () => {
     h.state.data = { link_state: 'unavailable', complete: true, slots: [] };
     const res = await getFreeBusy('t', 'a', 'b', 'c', 'd');
-    expect(res).toEqual({ linkState: 'unavailable', complete: true, slots: [] });
+    expect(res).toEqual({ linkState: 'unavailable', complete: true, slots: [], available: { status: 'not_requested' } });
   });
 
   it('treats a legacy response with no link_state as active', async () => {
@@ -347,7 +350,7 @@ describe('getFreeBusy', () => {
   it('keeps complete=false alongside a link_state', async () => {
     h.state.data = { link_state: 'active', complete: false, slots: [] };
     const res = await getFreeBusy('t', 'a', 'b', 'c', 'd');
-    expect(res).toEqual({ linkState: 'active', complete: false, slots: [] });
+    expect(res).toEqual({ linkState: 'active', complete: false, slots: [], available: { status: 'not_requested' } });
   });
 });
 
@@ -393,6 +396,209 @@ describe('getFreeBusy: 0019 rate-limit refusals', () => {
     // legacy fallback applies. The point of the test -- that a successful call
     // is not routed through the rate-limit mapping -- is unchanged.
     await expect(getFreeBusy('t', 'a', 'b', 'c', 'd'))
-      .resolves.toEqual({ linkState: 'active', complete: true, slots: [] });
+      .resolves.toEqual({ linkState: 'active', complete: true, slots: [], available: { status: 'not_requested' } });
+  });
+});
+
+/**
+ * 0024's `available`, narrowed at the repository boundary.
+ *
+ * The whole block is about ONE asymmetry. link_state fails OPEN -- anything
+ * unrecognised reads as 'active', because hiding a working calendar is the
+ * worse mistake there. `available` fails CLOSED -- anything unrecognised reads
+ * as not_requested and renders nothing -- because here the worse mistake is
+ * showing open time that was never computed. A viewer books against an invented
+ * slot; a viewer shown nothing merely loses the feature.
+ */
+describe('getFreeBusy: 0024 available', () => {
+  it('parses a complete answer, with both slot kinds', async () => {
+    h.state.data = {
+      link_state: 'active', complete: true, slots: [],
+      available: {
+        status: 'complete',
+        slots: [
+          { all_day: true, start_date: '2026-09-02', end_date: '2026-09-03' },
+          { all_day: false, start: '2026-09-01T09:00:00+00:00', end: '2026-09-01T12:00:00+00:00' },
+        ],
+      },
+    };
+    const res = await getFreeBusy('t', 'a', 'b', 'c', 'd');
+    expect(res.available).toEqual({
+      status: 'complete',
+      slots: [
+        { allDay: true, startDate: '2026-09-02', endDate: '2026-09-03' },
+        { allDay: false, start: '2026-09-01T09:00:00+00:00', end: '2026-09-01T12:00:00+00:00' },
+      ],
+    });
+  });
+
+  it('keeps a complete-but-empty answer as complete, not as not_requested', async () => {
+    // An opted-in link that found nothing has ANSWERED. Folding it back into
+    // not_requested would erase the difference between "none is shared" and
+    // "nobody asked", which is the one distinction the page renders on.
+    h.state.data = { complete: true, slots: [], available: { status: 'complete', slots: [] } };
+    const res = await getFreeBusy('t', 'a', 'b', 'c', 'd');
+    expect(res.available).toEqual({ status: 'complete', slots: [] });
+  });
+
+  it('parses indeterminate, and gives it no slots', async () => {
+    h.state.data = { complete: true, slots: [], available: { status: 'indeterminate' } };
+    const res = await getFreeBusy('t', 'a', 'b', 'c', 'd');
+    expect(res.available).toEqual({ status: 'indeterminate' });
+  });
+
+  it('drops slots that arrive alongside indeterminate', async () => {
+    // Defence against a backend that contradicts itself. The status is the
+    // answer; blocks attached to "cannot be determined" are not open time.
+    h.state.data = {
+      complete: true, slots: [],
+      available: {
+        status: 'indeterminate',
+        slots: [{ all_day: false, start: '2026-09-01T09:00:00+00:00', end: '2026-09-01T10:00:00+00:00' }],
+      },
+    };
+    const res = await getFreeBusy('t', 'a', 'b', 'c', 'd');
+    expect(res.available).toEqual({ status: 'indeterminate' });
+  });
+
+  it('parses an explicit not_requested', async () => {
+    h.state.data = { complete: true, slots: [], available: { status: 'not_requested' } };
+    const res = await getFreeBusy('t', 'a', 'b', 'c', 'd');
+    expect(res.available).toEqual({ status: 'not_requested' });
+  });
+
+  it('reads a pre-0024 response, with no available key at all, as not_requested', async () => {
+    h.state.data = { link_state: 'active', complete: true, slots: [] };
+    const res = await getFreeBusy('t', 'a', 'b', 'c', 'd');
+    expect(res.available).toEqual({ status: 'not_requested' });
+  });
+
+  it('reads a null available as not_requested', async () => {
+    h.state.data = { complete: true, slots: [], available: null };
+    const res = await getFreeBusy('t', 'a', 'b', 'c', 'd');
+    expect(res.available).toEqual({ status: 'not_requested' });
+  });
+
+  it('reads an UNRECOGNISED status as not_requested, never as slots', async () => {
+    h.state.data = {
+      complete: true, slots: [],
+      available: {
+        status: 'partial',
+        slots: [{ all_day: true, start_date: '2026-09-02', end_date: '2026-09-03' }],
+      },
+    };
+    const res = await getFreeBusy('t', 'a', 'b', 'c', 'd');
+    expect(res.available).toEqual({ status: 'not_requested' });
+  });
+
+  it('reads a complete whose slots are not an array as not_requested', async () => {
+    h.state.data = { complete: true, slots: [], available: { status: 'complete', slots: null } };
+    const res = await getFreeBusy('t', 'a', 'b', 'c', 'd');
+    expect(res.available).toEqual({ status: 'not_requested' });
+  });
+
+  it('leaves the BUSY fields untouched by anything available does', async () => {
+    // The backward-compatibility guarantee: `complete` and `slots` still mean
+    // the busy set alone, and an available answer never edits either.
+    h.state.data = {
+      link_state: 'active',
+      complete: false,
+      slots: [{ all_day: false, start: '2026-09-01T09:00:00+00:00', end: '2026-09-01T10:00:00+00:00' }],
+      available: {
+        status: 'complete',
+        slots: [{ all_day: true, start_date: '2026-09-02', end_date: '2026-09-03' }],
+      },
+    };
+    const res = await getFreeBusy('t', 'a', 'b', 'c', 'd');
+    expect(res.complete).toBe(false);
+    expect(res.slots).toEqual([
+      { allDay: false, start: '2026-09-01T09:00:00+00:00', end: '2026-09-01T10:00:00+00:00' },
+    ]);
+  });
+
+  it('an incomplete BUSY answer does not make the available answer indeterminate', async () => {
+    // The two computations fail independently. 0024 decides availability's own
+    // completeness; the client must not downgrade it because busy was partial,
+    // nor upgrade it because busy was exact.
+    h.state.data = {
+      complete: false, slots: [],
+      available: {
+        status: 'complete',
+        slots: [{ all_day: true, start_date: '2026-09-02', end_date: '2026-09-03' }],
+      },
+    };
+    const res = await getFreeBusy('t', 'a', 'b', 'c', 'd');
+    expect(res.complete).toBe(false);
+    expect(res.available.status).toBe('complete');
+  });
+
+  it('never derives available slots from the busy ones', async () => {
+    // The rule the whole feature rests on: available is what the owner marked,
+    // never the complement of busy. A response with busy blocks and no
+    // available key must produce NO available slots.
+    h.state.data = {
+      complete: true,
+      slots: [{ all_day: false, start: '2026-09-01T09:00:00+00:00', end: '2026-09-01T10:00:00+00:00' }],
+    };
+    const res = await getFreeBusy('t', 'a', 'b', 'c', 'd');
+    expect(res.available).toEqual({ status: 'not_requested' });
+  });
+
+  it('an unavailable link discloses nothing about available either', async () => {
+    h.state.data = { link_state: 'unavailable', complete: true, slots: [] };
+    const res = await getFreeBusy('t', 'a', 'b', 'c', 'd');
+    expect(res.linkState).toBe('unavailable');
+    expect(res.available).toEqual({ status: 'not_requested' });
+  });
+});
+
+/**
+ * include_private and share_available are two independent switches on the same
+ * row. 0022 made them orthogonal in the database; these pin that the client
+ * sends all four combinations faithfully and reads them back the same way.
+ */
+describe('include_private and share_available are independent', () => {
+  const row = (include_private: boolean, share_available: boolean) => ({
+    id: 'l1', label: null, include_private, share_available,
+    expires_at: null, revoked_at: null, created_at: '2026-09-01T00:00:00Z',
+  });
+
+  it('sends every combination to create_share_link', async () => {
+    for (const ip of [true, false]) {
+      for (const sa of [true, false]) {
+        h.calls.length = 0;
+        h.state.data = [{ ...row(ip, sa), token: 'tok' }];
+        await createShareLink({ includePrivate: ip, shareAvailable: sa });
+        expect(h.calls[0]!.params).toMatchObject({
+          p_include_private: ip,
+          p_share_available: sa,
+        });
+      }
+    }
+  });
+
+  it('maps every combination back without conflating the two', async () => {
+    for (const ip of [true, false]) {
+      for (const sa of [true, false]) {
+        h.state.data = [row(ip, sa)];
+        const [link] = await listShareLinks();
+        expect(link!.includePrivate).toBe(ip);
+        expect(link!.shareAvailable).toBe(sa);
+      }
+    }
+  });
+
+  it('an opted-out link can still include private events', async () => {
+    h.state.data = [row(true, false)];
+    const [link] = await listShareLinks();
+    expect(link!.includePrivate).toBe(true);
+    expect(link!.shareAvailable).toBe(false);
+  });
+
+  it('an opted-in link can still exclude private events', async () => {
+    h.state.data = [row(false, true)];
+    const [link] = await listShareLinks();
+    expect(link!.includePrivate).toBe(false);
+    expect(link!.shareAvailable).toBe(true);
   });
 });
