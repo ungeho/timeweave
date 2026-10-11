@@ -602,3 +602,67 @@ describe('include_private and share_available are independent', () => {
     expect(link!.shareAvailable).toBe(true);
   });
 });
+
+/**
+ * 0025 slot shapes on the wire.
+ *
+ * Before 0025 an Available answer was all-day OR timed, because a window that
+ * mixed the models refused to answer at all. Now a single `complete` answer can
+ * carry BOTH: an all-day range no timed Busy touched stays all-day, while one
+ * that was bitten into comes back as timed fragments. Nothing in the client
+ * needed changing for that -- the shapes are the ones FreeBusySlot already
+ * discriminates on -- which is exactly the claim these pin.
+ */
+describe('0025: an Available answer may mix all-day and timed slots', () => {
+  it('parses a mixed set, keeping each slot in its own model', async () => {
+    h.state.data = {
+      link_state: 'active', complete: true, slots: [],
+      available: {
+        status: 'complete',
+        slots: [
+          // untouched all-day day
+          { all_day: true, start_date: '2026-10-08', end_date: '2026-10-09' },
+          // the day timed Busy bit into, returned as two fragments
+          { all_day: false, start: '2026-10-09T00:00:00+09:00', end: '2026-10-09T09:00:00+09:00' },
+          { all_day: false, start: '2026-10-09T10:00:00+09:00', end: '2026-10-10T00:00:00+09:00' },
+        ],
+      },
+    };
+    const res = await getFreeBusy('t', 'a', 'b', 'c', 'd');
+    expect(res.available).toEqual({
+      status: 'complete',
+      slots: [
+        { allDay: true, startDate: '2026-10-08', endDate: '2026-10-09' },
+        { allDay: false, start: '2026-10-09T00:00:00+09:00', end: '2026-10-09T09:00:00+09:00' },
+        { allDay: false, start: '2026-10-09T10:00:00+09:00', end: '2026-10-10T00:00:00+09:00' },
+      ],
+    });
+  });
+
+  it('keeps Busy untouched by the mixed Available answer', async () => {
+    h.state.data = {
+      link_state: 'active', complete: true,
+      slots: [{ all_day: true, start_date: '2026-10-10', end_date: '2026-10-12' }],
+      available: {
+        status: 'complete',
+        slots: [{ all_day: false, start: '2026-10-08T09:00:00+09:00', end: '2026-10-08T11:00:00+09:00' }],
+      },
+    };
+    const res = await getFreeBusy('t', 'a', 'b', 'c', 'd');
+    expect(res.complete).toBe(true);
+    expect(res.slots).toEqual([{ allDay: true, startDate: '2026-10-10', endDate: '2026-10-12' }]);
+  });
+
+  it('still fails closed when 0025 cannot resolve the owner zone', async () => {
+    // The unset-zone path: 0025 answers exactly what 0024 answered, and the
+    // client must keep rendering it as the indeterminate notice rather than as
+    // an empty availability strip.
+    h.state.data = {
+      link_state: 'active', complete: true,
+      slots: [{ all_day: true, start_date: '2026-10-05', end_date: '2026-10-06' }],
+      available: { status: 'indeterminate' },
+    };
+    const res = await getFreeBusy('t', 'a', 'b', 'c', 'd');
+    expect(res.available).toEqual({ status: 'indeterminate' });
+  });
+});

@@ -3,6 +3,7 @@ import { CalendarPage } from './features/calendar/CalendarPage';
 import { FreeBusyPage } from './features/share/FreeBusyPage';
 import { AuthGate } from './auth/AuthGate';
 import { useAuth } from './auth/useAuth';
+import { SettingsDialog } from './features/settings/SettingsDialog';
 import { resolveInitialTheme, type Theme } from './utils/theme';
 
 const THEME_KEY = 'timeweave.theme';
@@ -16,6 +17,7 @@ function shareTokenFromPath(): string | null {
 
 export function App() {
   const { user, authEnabled, signOut } = useAuth();
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [theme, setTheme] = useState<Theme>(() =>
     resolveInitialTheme(
       localStorage.getItem(THEME_KEY),
@@ -43,9 +45,14 @@ export function App() {
       <header className="app-header">
         <div className="brand">TimeWeave</div>
         <div className="app-header-actions">
+          {/* Settings belong to an authenticated owner: the time zone inside
+              decides how this account's all-day events are disclosed, so the
+              entry point lives beside the sign-out button and nowhere near the
+              anonymous share route above. */}
           {authEnabled && user && (
             <>
               <span className="user-email">{user.email}</span>
+              <button className="btn" onClick={() => setSettingsOpen(true)}>設定</button>
               <button className="btn" onClick={() => void signOut()}>ログアウト</button>
             </>
           )}
@@ -63,6 +70,12 @@ export function App() {
           <CalendarPage />
         </AuthGate>
       </main>
+      {/* Rendered only for a signed-in owner: it reads and writes a row that
+          RLS scopes to auth.uid(), so there is nothing for it to do without
+          one, and the anonymous share route returns long before this point. */}
+      {settingsOpen && authEnabled && user && (
+        <SettingsDialog onClose={() => setSettingsOpen(false)} />
+      )}
     </div>
   );
 }

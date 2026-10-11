@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { FreeBusySlot } from '../../types/share';
 import { dayStartInstantIso } from '../../utils/timezone';
 import { busyForDay, hasNoDisclosedBusy } from './freeBusyLayout';
-import { availableSlots } from './availablePresentation';
+import { availableSlots, hasDisclosedAvailable } from './availablePresentation';
 
 const TZ = 'Asia/Tokyo';
 
@@ -175,5 +175,58 @@ describe('availability slots on a day, via busyForDay', () => {
     const open = busyForDay('2026-09-01', TZ, availableSlots({ status: 'complete', slots: [] }));
     expect(open.timed).toHaveLength(0);
     expect(open.allDayCount).toBe(0);
+  });
+});
+
+/**
+ * 0025 shapes on the grid.
+ *
+ * The page calls busyForDay once per set, so a mixed Available answer has to
+ * land on the right days without the all-day and timed halves interfering.
+ * These pin the arrangement 0025 actually produces: one untouched all-day day
+ * plus the two timed fragments of the day a Busy block bit into.
+ */
+describe('0025: a mixed all-day + timed Available answer on the grid', () => {
+  const TZ = 'Asia/Tokyo';
+  const MIXED: FreeBusySlot[] = [
+    { allDay: true, startDate: '2026-10-08', endDate: '2026-10-09' },
+    { allDay: false, start: '2026-10-08T15:00:00.000Z', end: '2026-10-09T00:00:00.000Z' },
+    { allDay: false, start: '2026-10-09T01:00:00.000Z', end: '2026-10-09T15:00:00.000Z' },
+  ];
+
+  it('places the untouched all-day slot on its own day only', () => {
+    expect(busyForDay('2026-10-08', TZ, MIXED).allDayCount).toBe(1);
+    expect(busyForDay('2026-10-09', TZ, MIXED).allDayCount).toBe(0);
+    expect(busyForDay('2026-10-10', TZ, MIXED).allDayCount).toBe(0);
+  });
+
+  it('places both timed fragments on the day they belong to', () => {
+    // 2026-10-09 in JST runs from 10-08T15:00Z to 10-09T15:00Z, so both
+    // fragments fall on it.
+    expect(busyForDay('2026-10-09', TZ, MIXED).timed).toHaveLength(2);
+  });
+
+  it('keeps the two models from bleeding into each other', () => {
+    // The untouched day shows an all-day block and NO timed one; the bitten
+    // day shows timed blocks and NO all-day one. If either leaked, a viewer
+    // would read a whole open day where only fragments are offered, or the
+    // reverse.
+    const d8 = busyForDay('2026-10-08', TZ, MIXED);
+    const d9 = busyForDay('2026-10-09', TZ, MIXED);
+    expect(d8.allDayCount).toBe(1);
+    expect(d8.timed).toHaveLength(0);
+    expect(d9.allDayCount).toBe(0);
+    expect(d9.timed.length).toBeGreaterThan(0);
+  });
+
+  it('draws the fragments in ascending order', () => {
+    const d9 = busyForDay('2026-10-09', TZ, MIXED).timed;
+    expect(Date.parse(d9[0]!.start)).toBeLessThan(Date.parse(d9[1]!.start));
+  });
+
+  it('treats the mixed answer as DISCLOSING availability', () => {
+    // hasDisclosedAvailable gates the busy-empty notice; a mixed answer must
+    // count as "blocks are on screen" or that notice would reappear above them.
+    expect(hasDisclosedAvailable({ status: 'complete', slots: MIXED })).toBe(true);
   });
 });
