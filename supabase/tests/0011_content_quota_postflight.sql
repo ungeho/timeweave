@@ -718,13 +718,27 @@ from public.events
 where (title like 'pf %' or title ~ '^a{200,}$')
   and owner_id <> current_setting('pf.owner_f')::uuid;
 
--- 16 is PINNED from the preflight, on purpose and with the same reasoning the
--- cleanup script used: if a real event has been created since, this reports
--- MISMATCH and says so, rather than quietly measuring a table that moved. A
--- MISMATCH here is information, not necessarily a fault -- confirm the new
--- number is legitimate, then update this one literal.
+-- ord 81 IS NOW CONTEXT_ONLY. It used to pin 16, the count this project's
+-- PRODUCTION events table held when 0011 was applied, so that a table which had
+-- moved would report MISMATCH rather than be measured silently.
+--
+-- That literal is environment-specific, and this file is no longer run only
+-- against production: an isolated test database legitimately holds 0 real rows,
+-- which made the row report MISMATCH for a reason that is not a defect. It was
+-- NOT re-pinned to 0 -- that would simply move the problem to the other
+-- environment. The expectation is NULL instead, which the report's status
+-- expression renders as `context`, and the COUNT IS STILL TAKEN AND PRINTED, so
+-- a reader sees the real number either way.
+--
+-- The blast-radius ASSERTION lives in ord 80, which is environment-independent:
+-- it proves this file wrote nothing outside the fixture owner. That is the row
+-- that must stay a gate, and it is unchanged.
+--
+-- If a pinned baseline is wanted again for a specific environment, compare this
+-- row's printed value against that environment's known count out of band.
 insert into pf_log
-select 81, 'blast radius', 'real (non-fixture) events rows, unchanged since preflight', '16',
+select 81, 'blast radius',
+       'CONTEXT_ONLY: real (non-fixture) events rows -- environment-dependent', null,
        count(*)::text
 from public.events
 where owner_id <> current_setting('pf.owner_f')::uuid;

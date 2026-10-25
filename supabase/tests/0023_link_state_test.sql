@@ -253,7 +253,8 @@ begin
   perform set_config('role', 'none', true);
 
   assert v_wrap = jsonb_build_object('link_state','active','complete',true,
-                                     'slots','[]'::jsonb),
+                                     'slots','[]'::jsonb,
+                                     'available',jsonb_build_object('status','not_requested')),
     '2.1 an active link with nothing in the window must answer active/empty, got '
     || v_wrap::text;
   assert v_wrap->>'link_state' = 'active',
@@ -280,7 +281,8 @@ begin
            'end',   to_jsonb(timestamptz '2026-06-02 10:00:00+00')),
     '5.1 the busy interval must be the event itself, got ' || (v_wrap->'slots'->0)::text;
   -- R18.B's invariant in its U2 form.
-  assert v_wrap = v_core || jsonb_build_object('link_state','active'),
+  assert v_wrap = v_core || jsonb_build_object('link_state','active',
+                             'available',jsonb_build_object('status','not_requested')),
     '5.1/R18.B the wrapper must be exactly core || link_state=active. core='
     || v_core::text || ' wrapper=' || v_wrap::text;
 
@@ -289,7 +291,8 @@ begin
   v_wrap := public.get_free_busy(v_t1, v_from, v_to, v_fd, v_td);   -- L1 #3
   perform set_config('role', 'none', true);
   assert v_wrap = jsonb_build_object('link_state','active','complete',true,
-                                     'slots','[]'::jsonb),
+                                     'slots','[]'::jsonb,
+                                     'available',jsonb_build_object('status','not_requested')),
     '5.1/R1.P2 an available single timed event must disclose nothing, got ' || v_wrap::text;
   -- R18.A ADAPTED: an all-available calendar still discloses nothing, but it is
   -- no longer indistinguishable from an expired token. Section 7 pins the other
@@ -321,7 +324,8 @@ begin
   v_wrap := public.get_free_busy(v_t1, v_from, v_to, v_fd, v_td);   -- L1 #5
   perform set_config('role', 'none', true);
   assert v_wrap = jsonb_build_object('link_state','active','complete',true,
-                                     'slots','[]'::jsonb),
+                                     'slots','[]'::jsonb,
+                                     'available',jsonb_build_object('status','not_requested')),
     '5.7/R9 an unexpandable AVAILABLE master must leave the answer complete and empty, got '
     || v_wrap::text;
   delete from public.events where id = v_m;
@@ -339,7 +343,8 @@ begin
   v_wrap := public.get_free_busy(v_t0, v_from, v_to, v_fd, v_td);   -- L0 #1
   perform set_config('role', 'none', true);
   assert v_wrap = jsonb_build_object('link_state','active','complete',true,
-                                     'slots','[]'::jsonb),
+                                     'slots','[]'::jsonb,
+                                     'available',jsonb_build_object('status','not_requested')),
     '5.11/R17.O1 include_private=false must disclose no private row at all, got '
     || v_wrap::text;
 
@@ -356,7 +361,8 @@ begin
            'start', to_jsonb(timestamptz '2026-06-02 09:00:00+00'),
            'end',   to_jsonb(timestamptz '2026-06-02 10:00:00+00')),
     '5.11/R17.O2 the disclosed row must be the BUSY one, got ' || (v_wrap->'slots'->0)::text;
-  assert v_wrap = v_core || jsonb_build_object('link_state','active'),
+  assert v_wrap = v_core || jsonb_build_object('link_state','active',
+                             'available',jsonb_build_object('status','not_requested')),
     '5.11/R17 wrapper must be core || link_state=active, got ' || v_wrap::text;
   delete from public.events where id in (v_a, v_b);
 
@@ -371,23 +377,35 @@ begin
   v_wrap := public.get_free_busy(v_t1, v_from, v_to, v_fd, v_td);   -- L1 #7
   perform set_config('role', 'none', true);
 
-  assert v_wrap = v_core || jsonb_build_object('link_state','active'),
+  assert v_wrap = v_core || jsonb_build_object('link_state','active',
+                             'available',jsonb_build_object('status','not_requested')),
     '6.1 wrapper must equal core || link_state=active. core=' || v_core::text
     || ' wrapper=' || v_wrap::text;
-  assert v_wrap - 'link_state' = v_core,
-    '6.2 stripping link_state must give back the core answer exactly, got '
-    || (v_wrap - 'link_state')::text;
+  assert v_wrap - 'link_state' - 'available' = v_core,
+    '6.2 stripping link_state and available must give back the core answer exactly, got '
+    || (v_wrap - 'link_state' - 'available')::text;
   assert v_wrap->'complete' = v_core->'complete' and v_wrap->'slots' = v_core->'slots',
     '6.3 the wrapper must not reshape complete or slots';
 
+  -- 8.1-8.3, in their 0024 form. The ACTIVE branch grew a fourth key when 0024
+  -- added available; the UNAVAILABLE branch did not, and section 9 still pins it
+  -- at exactly three. The two branches are deliberately NOT normalised to the
+  -- same key set -- that difference is the contract.
   select count(*) into v_n from jsonb_object_keys(v_wrap) k;
-  assert v_n = 3, format('8.1 an active answer must carry exactly three keys, got %s: %s',
+  assert v_n = 4, format('8.1 an active answer must carry exactly four keys, got %s: %s',
                          v_n, v_wrap::text);
-  assert v_wrap ? 'link_state' and v_wrap ? 'complete' and v_wrap ? 'slots',
-    '8.2 the three keys must be link_state, complete and slots, got ' || v_wrap::text;
-  assert not (v_wrap ? 'available') and not (v_wrap ? 'reason')
-     and not (v_wrap ? 'status')    and not (v_wrap ? 'share_available'),
-    '8.3 U2 must publish no Available, reason, status or share_available key, got '
+  assert v_wrap ? 'link_state' and v_wrap ? 'complete' and v_wrap ? 'slots'
+     and v_wrap ? 'available',
+    '8.2 the four keys must be link_state, complete, slots and available, got '
+    || v_wrap::text;
+  -- This suite's links are inserted without share_available and take the 0022
+  -- column default (false), so an active answer here carries not_requested.
+  assert v_wrap -> 'available' = jsonb_build_object('status','not_requested'),
+    '8.3a share_available is false for these links, so no Available may be '
+    'computed, got ' || v_wrap::text;
+  assert not (v_wrap ? 'reason') and not (v_wrap ? 'status')
+     and not (v_wrap ? 'share_available'),
+    '8.3b U2 must publish no reason, status or share_available key, got '
     || v_wrap::text;
   delete from public.events where id = v_a;
 

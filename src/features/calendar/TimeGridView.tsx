@@ -6,12 +6,14 @@ import {
   layoutDayColumn,
   MINUTES_PER_DAY,
 } from './timeGrid';
+import { useTranslate } from '../../i18n/useLanguage';
+import { useLanguage } from '../../i18n/useLanguage';
+import { weekdayShort } from '../../i18n/dateNames';
 import { AllDayLane } from './AllDayLane';
 import { EventChip } from './EventChip';
 
 const HOUR_PX = 48;
 const TOTAL_PX = 24 * HOUR_PX;
-const WEEKDAY_LABELS = ['月', '火', '水', '木', '金', '土', '日'];
 
 interface Props {
   days: DayCell[];
@@ -27,6 +29,10 @@ interface Props {
  * timezone-explicit pure helpers in `timeGrid`.
  */
 export function TimeGridView({ days, occurrences, timeZone, onSlotClick, onOccurrenceClick }: Props) {
+  const tr = useTranslate();
+  // A DATE FORMAT, so it reads the language, not the dictionary. Pinned to
+  // the default until P6, exactly as the copy around it is.
+  const { language } = useLanguage();
   const scrollRef = useRef<HTMLDivElement>(null);
   const anchorKey = days[0]?.dayKey ?? '';
 
@@ -59,7 +65,7 @@ export function TimeGridView({ days, occurrences, timeZone, onSlotClick, onOccur
         <div className="timegrid-dayheads" style={colStyle}>
           {days.map((d) => (
             <div key={d.dayKey} className={`timegrid-dayhead ${d.isToday ? 'today' : ''}`}>
-              <span className="dh-weekday">{WEEKDAY_LABELS[d.weekdayIndex]}</span>
+              <span className="dh-weekday">{weekdayShort(language, d.weekdayIndex)}</span>
               <span className="dh-day">{d.dayOfMonth}</span>
             </div>
           ))}
@@ -67,7 +73,7 @@ export function TimeGridView({ days, occurrences, timeZone, onSlotClick, onOccur
       </div>
 
       <div className="timegrid-alldayrow">
-        <div className="timegrid-gutter-label">終日</div>
+        <div className="timegrid-gutter-label">{tr('calendar.allDay')}</div>
         <div className="timegrid-allday">
           <AllDayLane dayKeys={dayKeys} occurrences={occurrences} onOccurrenceClick={onOccurrenceClick} />
         </div>

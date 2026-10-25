@@ -66,9 +66,7 @@ function assertTimezoneRules(prev: EventRow | null, next: EventRow, isInsert: bo
   });
 
   if (!timezonePlacementOk(shape(next))) {
-    throw new InvalidTimezoneError(
-      'タイムゾーンを持てるのは時刻ありの繰り返し予定だけです',
-    );
+    throw InvalidTimezoneError.timedRecurrenceOnly();
   }
 
   const violation = timezoneTransitionError(

@@ -5,30 +5,49 @@
  */
 
 export interface MonthGridCell {
-  date: Date; // local midnight of this day
+  /**
+   * The first local instant of this day (its local midnight). For a date the
+   * local zone skipped entirely (Pacific/Apia 2011-12-30) that is the next
+   * day's start, so read the date from dayKey / dayOfMonth, never from here.
+   */
+  date: Date;
   dayKey: string; // "YYYY-MM-DD" local
+  /** The number the cell shows: dayKey's day of month. */
+  dayOfMonth: number;
   inCurrentMonth: boolean;
   isToday: boolean;
 }
 
-/** Build the grid of days shown for the month containing `anchor`. */
+/**
+ * Build the grid of days shown for the month containing `anchor`.
+ *
+ * The dates are CALENDAR arithmetic (UTC fields, no zone), and only then
+ * turned into local instants. Reading a cell's date back out of a local Date
+ * (as this did) fails where the local zone skipped a whole date: with the OS on
+ * Pacific/Apia, `new Date(2011, 11, 30)` is 12-31 00:00, so December 2011 had
+ * two 31sts and no 30th (R1-M, docs/p8-datetime-contract.md §10).
+ */
 export function buildMonthGrid(anchor: Date, today: Date = new Date()): MonthGridCell[] {
   const year = anchor.getFullYear();
   const month = anchor.getMonth();
 
-  const first = new Date(year, month, 1);
-  const offset = (first.getDay() + 6) % 7; // days from Monday to the 1st
-  const gridStart = new Date(year, month, 1 - offset);
+  const firstDow = new Date(Date.UTC(year, month, 1)).getUTCDay();
+  const offset = (firstDow + 6) % 7; // days from Monday to the 1st
 
   const todayKey = dayKey(today);
   const cells: MonthGridCell[] = [];
   for (let i = 0; i < 42; i++) {
-    const date = new Date(gridStart.getFullYear(), gridStart.getMonth(), gridStart.getDate() + i);
+    const cal = new Date(Date.UTC(year, month, 1 - offset + i));
+    const y = cal.getUTCFullYear();
+    const m = cal.getUTCMonth();
+    const d = cal.getUTCDate();
+    const key = `${y}-${pad(m + 1)}-${pad(d)}`;
     cells.push({
-      date,
-      dayKey: dayKey(date),
-      inCurrentMonth: date.getMonth() === month,
-      isToday: dayKey(date) === todayKey,
+      date: new Date(y, m, d),
+      dayKey: key,
+      dayOfMonth: d,
+      inCurrentMonth: m === month,
+      isToday: key === todayKey,
     });
   }
   return cells;
@@ -37,10 +56,11 @@ export function buildMonthGrid(anchor: Date, today: Date = new Date()): MonthGri
 /** Range [start, end) in UTC ISO covering the whole visible month grid. */
 export function monthGridRange(anchor: Date): { startIso: string; endIso: string } {
   const cells = buildMonthGrid(anchor);
-  const first = cells[0]!.date;
-  const last = cells[cells.length - 1]!.date;
-  const start = new Date(first.getFullYear(), first.getMonth(), first.getDate());
-  const endExclusive = new Date(last.getFullYear(), last.getMonth(), last.getDate() + 1);
+  // From the calendar keys, not read back from cell.date (see buildMonthGrid).
+  const [fy, fm, fd] = cells[0]!.dayKey.split('-').map(Number) as [number, number, number];
+  const [ly, lm, ld] = cells[cells.length - 1]!.dayKey.split('-').map(Number) as [number, number, number];
+  const start = new Date(fy, fm - 1, fd);
+  const endExclusive = new Date(ly, lm - 1, ld + 1);
   return { startIso: start.toISOString(), endIso: endExclusive.toISOString() };
 }
 

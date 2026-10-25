@@ -1,14 +1,21 @@
 import { describe, expect, it } from 'vitest';
 import {
   LANGUAGES,
-  LANGUAGE_NOT_IN_CALCULATION_NOTICE,
-  LANGUAGE_PENDING_NOTICE,
-  TIMEZONE_CHANGE_NOTICE,
-  TIMEZONE_UNSET_NOTICE,
   browserTimezone,
+  languageNotInCalculationNotice,
   timezoneChangeNeedsWarning,
+  timezoneChangeNotice,
   timezoneOptions,
+  timezoneUnsetNotice,
 } from './timezoneSetting';
+
+// P6 step 3 turned the four notices into functions of the display language.
+// These guards are about the JAPANESE, so they call with NO ARGUMENT -- which
+// is also the assertion that the default still answers exactly as the module
+// constants did. The English side lives in i18n/settingsNotices.i18n.test.ts.
+const TIMEZONE_CHANGE_NOTICE = timezoneChangeNotice();
+const TIMEZONE_UNSET_NOTICE = timezoneUnsetNotice();
+const LANGUAGE_NOT_IN_CALCULATION_NOTICE = languageNotInCalculationNotice();
 
 describe('timezoneOptions', () => {
   it('offers a non-empty list', () => {
@@ -121,31 +128,33 @@ describe('LANGUAGES', () => {
  * admitting the switch is not live.
  */
 describe('the language notices', () => {
-  it('says plainly that switching is NOT in effect yet', () => {
-    expect(LANGUAGE_PENDING_NOTICE).toContain('まだ有効になっていません');
-  });
-
-  it('says what the user will actually see', () => {
-    expect(LANGUAGE_PENDING_NOTICE).toContain('日本語');
-  });
-
-  it('says the value is still kept, so saving is not pointless', () => {
-    expect(LANGUAGE_PENDING_NOTICE).toContain('保存');
-  });
-
-  it('does NOT claim the wording changes', () => {
-    // The exact false claim this replaced.
-    expect(LANGUAGE_PENDING_NOTICE).not.toContain('文言だけが変わります');
-    expect(LANGUAGE_NOT_IN_CALCULATION_NOTICE).not.toContain('文言だけが変わります');
+  it('no longer claims the switch is inactive -- that notice was removed', () => {
+    // It was true for four phases and is now false. The module must not export
+    // it, and nothing may say it again. Read through Vite's glob rather than
+    // node:fs: this project carries no @types/node and adds no dependency for
+    // tooling, which is the same bargain wiring.test.ts makes.
+    const mod = (
+      import.meta.glob('./timezoneSetting.ts', {
+        query: '?raw',
+        import: 'default',
+        eager: true,
+      }) as Record<string, string>
+    )['./timezoneSetting.ts'];
+    expect(mod).toBeTypeOf('string');
+    expect(mod).not.toMatch(/export function languagePendingNotice/);
+    expect(mod).not.toContain('settings.language.pending');
   });
 
   it('keeps the Free/Busy independence as its own statement', () => {
+    // The half that is still true: whatever the language does, it is not an
+    // input to what anonymous viewers are told.
     expect(LANGUAGE_NOT_IN_CALCULATION_NOTICE).toContain('空き時間の計算には影響しません');
   });
 
-  it('keeps the two statements separate', () => {
-    // One is about a feature that is not ready; the other is a permanent
-    // property. Merging them would make the permanent one look temporary.
-    expect(LANGUAGE_PENDING_NOTICE).not.toBe(LANGUAGE_NOT_IN_CALCULATION_NOTICE);
+  it('does NOT claim the wording is all that changes', () => {
+    // The original false claim, which the pending notice replaced. Now that
+    // the switch is live the wording DOES change -- but this sentence is about
+    // the Free/Busy calculation, so it still must not say that.
+    expect(LANGUAGE_NOT_IN_CALCULATION_NOTICE).not.toContain('文言だけが変わります');
   });
 });

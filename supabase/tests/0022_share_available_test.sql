@@ -613,6 +613,16 @@ end $$;
 -- and on, and that jsonb still has exactly two keys. If a future change starts
 -- reading the column, this is the assertion that will notice.
 --
+-- 0024 IS THAT FUTURE CHANGE, AND IT NOTICED. The section did its job: 0024
+-- reads the column on purpose, so the off/on answers are no longer identical
+-- and the active result no longer has two keys. What survives -- and is what
+-- this section now asserts -- is the half of the guarantee that 0024 must NOT
+-- break: turning Available on must not disturb the BUSY payload. Everything
+-- outside the `available` key must still be byte-identical off and on. The
+-- `available` key's own content is 0024_available_test's subject, not this
+-- section's; here it is only pinned to not_requested while the setting is off,
+-- which is the modern form of "the column being off discloses nothing".
+--
 -- Two get_free_busy calls, against 0019's budget of 15 per link and 40 per
 -- owner, so no limit is approached. Both calls share this DO block's
 -- statement_timestamp() and both land in the same concurrency slot, which
@@ -677,27 +687,47 @@ begin
   v_on := public.get_free_busy(v_tok, v_from, v_to, v_fd, v_td);
   perform set_config('role', 'none', true);
 
-  assert v_off = v_on,
-    '8.1 the anonymous answer must be IDENTICAL with share_available off and on. off='
-    || v_off::text || ' on=' || v_on::text;
+  -- 8.1, in its 0024 form: identical EVERYWHERE EXCEPT the available key. This
+  -- is the load-bearing half -- enabling Available must not move a single byte
+  -- of the Busy answer, and equality (not containment) still catches a stray
+  -- extra key on either side.
+  assert (v_off - 'available') = (v_on - 'available'),
+    '8.1 the anonymous answer outside `available` must be IDENTICAL with '
+    'share_available off and on. off=' || v_off::text || ' on=' || v_on::text;
 
   assert v_off = jsonb_build_object(
+           'link_state', 'active',
            'complete', true,
            'slots', jsonb_build_array(jsonb_build_object(
              'all_day', false,
              'start', to_jsonb(timestamptz '2026-06-02 09:00:00+00'),
-             'end',   to_jsonb(timestamptz '2026-06-02 10:00:00+00')))),
+             'end',   to_jsonb(timestamptz '2026-06-02 10:00:00+00'))),
+           'available', jsonb_build_object('status','not_requested')),
     '8.2 the answer itself, got ' || v_off::text;
 
-  -- Exactly two keys. Not "does not contain available" -- that would still pass
-  -- if some other key appeared.
+  -- Exactly four keys. Not "does not contain X" -- that would still pass if some
+  -- other key appeared. The count moved 2 -> 4 because 0023 added link_state and
+  -- 0024 added available; the exactness is what is being preserved.
   select count(*) into v_n from jsonb_object_keys(v_on) k;
-  assert v_n = 2, format('8.3 the response must have exactly two keys, got %s: %s',
+  assert v_n = 4, format('8.3 an active response must have exactly four keys, got %s: %s',
                          v_n, (select string_agg(k, ',') from jsonb_object_keys(v_on) k));
-  assert v_on ? 'complete' and v_on ? 'slots',
-    '8.4 those two keys must be complete and slots';
-  assert not (v_on ? 'available') and not (v_on ? 'link_state'),
-    '8.5 0022 must not have introduced available or link_state';
+  assert v_on ? 'link_state' and v_on ? 'complete' and v_on ? 'slots'
+     and v_on ? 'available',
+    '8.4 those four keys must be link_state, complete, slots and available';
+  -- 8.5 RESTATED. The original form asserted that available and link_state were
+  -- ABSENT, which 0023 and 0024 deliberately superseded. The surviving invariant
+  -- is the one that still matters: with the column OFF nothing is computed and
+  -- the answer says so, and with it ON the branch really did flip. `not_requested`
+  -- is produced only by the share_available=false branch of the wrapper -- the
+  -- helper returns complete or indeterminate and never not_requested -- so this
+  -- pair cannot both hold unless the column actually drove the branch.
+  assert v_off -> 'available' = jsonb_build_object('status','not_requested'),
+    '8.5a with share_available OFF no Available may be computed, got ' || v_off::text;
+  assert v_on -> 'available' <> jsonb_build_object('status','not_requested'),
+    '8.5b with share_available ON the Available branch must have run, got ' || v_on::text;
+  assert not (v_on ? 'share_available') and not (v_on ? 'reason')
+     and not (v_on ? 'status'),
+    '8.5c the column itself, and any reason/status key, must never be published';
 
   delete from public.events where id = v_ev;
   raise notice '8 OK';

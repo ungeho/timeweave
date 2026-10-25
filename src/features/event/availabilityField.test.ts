@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { AVAILABILITIES, isTitleRequired } from './availabilityField';
+import { AVAILABILITIES, availabilityLabel, isTitleRequired } from './availabilityField';
 import * as field from './availabilityField';
 
 /**
@@ -20,15 +20,26 @@ describe('isTitleRequired', () => {
 
 describe('AVAILABILITIES', () => {
   it('offers exactly the two stored values', () => {
-    expect(AVAILABILITIES.map((a) => a.value)).toEqual(['busy', 'available']);
+    expect([...AVAILABILITIES]).toEqual(['busy', 'available']);
   });
 
   it('lists the default first, so the control opens on it', () => {
-    expect(AVAILABILITIES[0]!.value).toBe('busy');
+    expect(AVAILABILITIES[0]).toBe('busy');
   });
 
-  it('gives every option a non-empty label', () => {
-    for (const a of AVAILABILITIES) expect(a.label).not.toBe('');
+  it('is a list of VALUES, so no wording is pinned at import time', () => {
+    // It used to be {value,label} pairs with the labels written here. The
+    // label depends on the display language and the value does not, so
+    // pairing them fixed the wording when the module loaded -- the shape
+    // VISIBILITIES and visibilityMeta were split out of during P6.
+    for (const a of AVAILABILITIES) expect(typeof a).toBe('string');
+  });
+
+  it('gives every option a non-empty label in both languages', () => {
+    for (const a of AVAILABILITIES) {
+      expect(availabilityLabel(a, 'ja'), a).not.toBe('');
+      expect(availabilityLabel(a, 'en'), a).not.toBe('');
+    }
   });
 });
 
@@ -46,15 +57,23 @@ describe('AVAILABILITIES', () => {
 describe('the availability control is independent of visibility', () => {
   it('exposes the options as a plain list, taking no visibility', () => {
     expect(Array.isArray(AVAILABILITIES)).toBe(true);
-    expect(AVAILABILITIES.map((a) => a.value)).toEqual(['busy', 'available']);
+    expect([...AVAILABILITIES]).toEqual(['busy', 'available']);
   });
 
   it('exports nothing that could gate an option on visibility', () => {
     // Every export is either the options list or the title rule, and the title
     // rule reads availability alone. Nothing here can see a visibility, so
     // nothing here can refuse a combination of the two.
-    expect(Object.keys(field).sort()).toEqual(['AVAILABILITIES', 'isTitleRequired']);
+    expect(Object.keys(field).sort()).toEqual([
+      'AVAILABILITIES',
+      'availabilityLabel',
+      'isTitleRequired',
+    ]);
     expect(field.isTitleRequired.length).toBe(1);
+    // The label helper takes an availability and nothing else -- `lang` is
+    // defaulted, which is why `length` is 1. It cannot see a visibility,
+    // so it cannot vary an option on one.
+    expect(field.availabilityLabel.length).toBe(1);
   });
 
   it('asks a private available event for no title, exactly as a public one', () => {

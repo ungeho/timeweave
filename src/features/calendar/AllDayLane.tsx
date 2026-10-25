@@ -3,6 +3,7 @@ import type { EventOccurrence } from '../../types/event';
 import { categoryColor } from '../../utils/categoryColor';
 import { buildAllDayBands, MAX_ALL_DAY_LANES } from './allDayBands';
 import { overflowEntries } from './dayAgenda';
+import { useLanguage, useTranslate } from '../../i18n/useLanguage';
 import { visibilityMeta } from './visibilityMeta';
 import { eventDisplayTitle } from './eventTitle';
 import { VisibilityIcon } from './EventChip';
@@ -35,6 +36,11 @@ export function AllDayLane({
   maxLanes = MAX_ALL_DAY_LANES,
   onOverflowClick,
 }: Props) {
+  const tr = useTranslate();
+  // The band’s title and its visibility label are user-facing copy, so
+  // they follow the resolved language -- which is pinned to the default
+  // until the switch flips, so nothing on screen moves yet.
+  const { language } = useLanguage();
   const { bands, laneCount, overflow } = buildAllDayBands(occurrences, dayKeys, maxLanes);
   const hasOverflow = overflow.some((n) => n > 0);
   const rows = laneCount + (hasOverflow ? 1 : 0);
@@ -49,8 +55,8 @@ export function AllDayLane({
     <div className="allday-lane" style={gridStyle}>
       {bands.map((band) => {
         const color = categoryColor(band.occurrence.event.category);
-        const vis = visibilityMeta[band.occurrence.event.visibility];
-        const shownTitle = eventDisplayTitle(band.occurrence.event);
+        const vis = visibilityMeta(band.occurrence.event.visibility, language);
+        const shownTitle = eventDisplayTitle(band.occurrence.event, language);
         const style = {
           gridColumn: `${band.startIndex + 1} / span ${band.span}`,
           gridRow: band.lane + 1,
@@ -69,8 +75,8 @@ export function AllDayLane({
             data-availability={band.occurrence.event.availability}
             style={style}
             onClick={() => onOccurrenceClick(band.occurrence)}
-            title={`${shownTitle}（${vis.label}）`}
-            aria-label={`${shownTitle}, ${vis.label}`}
+            title={tr('calendar.chip.title', { title: shownTitle, visibility: vis.label })}
+            aria-label={tr('calendar.chip.ariaLabel', { title: shownTitle, visibility: vis.label })}
           >
             {band.continuesLeft && <span className="cont-mark" aria-hidden>‹</span>}
             <VisibilityIcon visibility={band.occurrence.event.visibility} />
@@ -94,8 +100,8 @@ export function AllDayLane({
               e.stopPropagation();
               onOverflowClick(dayKey);
             }}
-            aria-label={`他 ${count} 件の終日予定を表示`}
-            title={`他 ${count} 件の終日予定を表示`}
+            aria-label={tr('calendar.more.allDay', { count })}
+            title={tr('calendar.more.allDay', { count })}
           >
             +{count}
           </button>

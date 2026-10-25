@@ -5,6 +5,11 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "docs": "node scripts/build-docs.mjs",
+    "docs:check": "node scripts/build-docs.mjs --check",
+    "shots:api": "node scripts/mock-supabase.mjs",
+    "shots:app": "vite --mode mockapi --port 5199 --strictPort",
+    "prebuild": "node scripts/build-docs.mjs --check",
     "build": "tsc --noEmit && vite build",
     "typecheck": "tsc --noEmit",
     "preview": "vite preview",
@@ -22,6 +27,7 @@
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",
     "@vitejs/plugin-react": "^4.3.4",
+    "markdown-it": "^15.0.2",
     "typescript": "^5.6.3",
     "vite": "^6.0.3",
     "vitest": "^3.2.4"

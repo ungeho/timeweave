@@ -1,19 +1,25 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import type { EventOccurrence } from '../../types/event';
 import { useCalendarView } from '../../hooks/useCalendarView';
 import { useEvents } from '../../hooks/useEvents';
 import { rowPatchFromEdit } from '../../services/exceptionEdit';
 import { isSupabaseConfigured } from '../../lib/supabase';
-import { getUserTimeZone, instantFromZonedDayMinutes } from '../../utils/timezone';
+import { getUserTimeZone, zonedDayKey } from '../../utils/timezone';
+import { useLanguage, useTranslate } from '../../i18n/useLanguage';
 import { ShareDialog } from '../share/ShareDialog';
 import { CalendarToolbar } from './CalendarToolbar';
 import { MonthView, monthSlotsStyle, useMonthSlots } from './MonthView';
+import { useIsMobile } from '../../hooks/useIsMobile';
+import { MobileCalendar } from './mobile/MobileCalendar';
+import { densitiesByDay, toDesktopMode, toMobileMode } from './mobileAgenda';
 import { DayAgendaDialog } from './DayAgendaDialog';
 import { TimeGridView } from './TimeGridView';
+import { caughtErrorText } from '../../i18n/errorText';
 import { isAwaitingRows } from './loadState';
-import { monthGridRange } from './monthGrid';
+import { buildMonthGrid, monthGridRange } from './monthGrid';
 import { buildDayCell, buildWeekDays, dayRange, weekRange } from './weekGrid';
 import { buildDayAgenda } from './dayAgenda';
+import { createTimesAt } from './createTimes';
 import {
   EventDialog,
   type DialogState,
@@ -31,7 +37,20 @@ import {
  * load is reported by the error banner, which is independent of this.
  */
 export function CalendarPage() {
-  const view = useCalendarView('month');
+  const tr = useTranslate();
+  // For the load-error banner, which resolves its wording at RENDER rather
+  // than at the moment the fetch failed. Nothing else on this page needs the
+  // language value itself.
+  const { language } = useLanguage();
+  const isMobile = useIsMobile();
+  /*
+    A PHONE OPENS ON THE DAY, a desktop on the month. Only the FIRST render
+    reads this -- useCalendarView keeps the mode in state from then on -- so a
+    reader who picks the month view on a phone keeps it, and a later resize
+    goes through toMobileMode/toDesktopMode below rather than back through
+    here.
+  */
+  const view = useCalendarView(isMobile ? 'agenda' : 'month');
   const events = useEvents();
   const [dialog, setDialog] = useState<DialogState | null>(null);
   const [shareOpen, setShareOpen] = useState(false);
@@ -40,13 +59,31 @@ export function CalendarPage() {
   // from inside the dialog is reflected the moment it reopens.
   const [agendaDay, setAgendaDay] = useState<string | null>(null);
   const timeZone = useMemo(() => getUserTimeZone(), []);
+
+  /*
+    THE ONE BRANCH. Everything below derives from `view.mode`, so keeping the
+    mode itself valid for the current layout is enough -- no component has to
+    ask how wide the window is, and the desktop path gains no conditions.
+
+    Resizing is not a request to go somewhere else, so the mode is MAPPED
+    rather than reset, and the anchor is left alone. A reader on the week view
+    who rotates their phone keeps the date and gets the agenda, which shows one
+    of those days in full.
+  */
+  useEffect(() => {
+    const wanted = isMobile ? toMobileMode(view.mode) : toDesktopMode(view.mode);
+    if (wanted !== view.mode) view.setMode(wanted);
+  }, [isMobile, view]);
   // Only for the month placeholder's height: MonthView reads the same hook, so
   // the box reserved while loading has the row count the grid will render with.
   const monthSlots = useMonthSlots();
 
   const range = useMemo(() => {
     if (view.mode === 'month') return monthGridRange(view.anchor);
-    if (view.mode === 'week') return weekRange(view.anchor, timeZone);
+    // `agenda` fetches the whole WEEK, not the selected day: the strip above
+    // the list marks which of the seven days hold anything, and it cannot do
+    // that from one day's occurrences. One range serves both.
+    if (view.mode === 'week' || view.mode === 'agenda') return weekRange(view.anchor, timeZone);
     return dayRange(view.anchor, timeZone);
   }, [view.mode, view.anchor, timeZone]);
 
@@ -66,22 +103,53 @@ export function CalendarPage() {
     [agendaDay, occurrences, timeZone],
   );
 
+  /*
+    THE SELECTED DAY IS THE ANCHOR. Not a second piece of state beside it:
+    two would have to be kept in step, and the one that carries a date across
+    a width change is the anchor, because both layouts already read it.
+  */
+  const selectedDayKey = useMemo(
+    () => zonedDayKey(view.anchor.toISOString(), timeZone),
+    [view.anchor, timeZone],
+  );
+
+  const weekDays = useMemo(
+    () => (isMobile && view.mode === 'agenda' ? buildWeekDays(view.anchor, timeZone) : []),
+    [isMobile, view.mode, view.anchor, timeZone],
+  );
+
+  /*
+    Which days to mark. The strip needs its seven; the compact month needs the
+    42 cells of its grid. Counted through `buildDayAgenda` -- see
+    mobileAgenda.ts for why a second filter would be free to disagree with the
+    list a reader opens.
+  */
+  const densityDays = useMemo(() => {
+    if (!isMobile) return [];
+    if (view.mode === 'month') return buildMonthGrid(view.anchor).map((c) => c.dayKey);
+    return weekDays.map((d) => d.dayKey);
+  }, [isMobile, view.mode, view.anchor, weekDays]);
+
+  const density = useMemo(
+    () => densitiesByDay(densityDays, occurrences, timeZone),
+    [densityDays, occurrences, timeZone],
+  );
+
+  const selectedAgenda = useMemo(
+    () => buildDayAgenda(selectedDayKey, occurrences, timeZone),
+    [selectedDayKey, occurrences, timeZone],
+  );
+
   // Month day click: default a 1-hour slot at 09:00 local on the clicked day.
+  // A click names a wall clock on a date; createTimesAt keeps the date and
+  // never moves a time that does not exist (R1-P, docs/p8-datetime-contract.md §10).
   const openCreateForDay = (dayKey: string) => {
-    setDialog({
-      mode: 'create',
-      startAt: instantFromZonedDayMinutes(dayKey, 9 * 60, timeZone),
-      endAt: instantFromZonedDayMinutes(dayKey, 10 * 60, timeZone),
-    });
+    setDialog({ mode: 'create', ...createTimesAt(dayKey, 9 * 60, timeZone) });
   };
 
   // Week/day time-slot click: 1-hour slot starting at the clicked time.
   const openCreateForSlot = (dayKey: string, minutes: number) => {
-    setDialog({
-      mode: 'create',
-      startAt: instantFromZonedDayMinutes(dayKey, minutes, timeZone),
-      endAt: instantFromZonedDayMinutes(dayKey, minutes + 60, timeZone),
-    });
+    setDialog({ mode: 'create', ...createTimesAt(dayKey, minutes, timeZone) });
   };
 
   const openEdit = (occ: EventOccurrence) => {
@@ -117,13 +185,34 @@ export function CalendarPage() {
   return (
     <div className="calendar-page">
       <div className="calendar-topbar">
-        <CalendarToolbar view={view} timeZone={timeZone} />
+        {/* The desktop toolbar offers month/week/day, none of which a phone
+            renders. MobileCalendar carries its own period bar and its own two
+            modes, so showing this one as well would be two sets of controls
+            for the same thing. */}
+        {!isMobile && <CalendarToolbar view={view} timeZone={timeZone} />}
         {isSupabaseConfigured && (
-          <button className="btn" onClick={() => setShareOpen(true)}>共有</button>
+          <button className="btn" onClick={() => setShareOpen(true)}>{tr('calendar.share')}</button>
         )}
       </div>
 
-      {events.error && <p className="banner error">読み込みエラー: {events.error}</p>}
+      {/* Both halves of this sentence come from the same resolved language:
+          the wrapper through tr(), the detail through caughtErrorText. Reading
+          `events.error.cause` here -- rather than a string the hook built --
+          is what lets a language change update the banner. */}
+      {events.error && (
+        <p className="banner error">
+          {tr('calendar.loadError', { message: caughtErrorText(events.error.cause, language) })}
+        </p>
+      )}
+
+      {/* K12: a series whose rule cannot be expanded is left off the calendar
+          (the rest is drawn as usual) -- said here, not silently. A count only:
+          this is the owner's own screen, but naming rows is not needed to act. */}
+      {events.unexpandableSeries.length > 0 && (
+        <p className="banner warn" role="status">
+          {tr('calendar.unexpandableSeries', { count: String(events.unexpandableSeries.length) })}
+        </p>
+      )}
 
       {isAwaitingRows({ loading: events.loading, rowCount: events.rows.length }) ? (
         // Nothing has arrived yet: an empty grid here would read as "no events".
@@ -137,8 +226,19 @@ export function CalendarPage() {
           }`}
           style={view.mode === 'month' ? monthSlotsStyle(monthSlots) : undefined}
         >
-          読み込み中…
+          {tr('common.loading')}
         </div>
+      ) : isMobile ? (
+        <MobileCalendar
+          view={view}
+          selectedDayKey={selectedDayKey}
+          weekDays={weekDays}
+          density={density}
+          agenda={selectedAgenda}
+          onSelectDay={(dayKey) => view.goTo(new Date(`${dayKey}T12:00:00`))}
+          onOccurrenceClick={openEdit}
+          onCreateOnDay={openCreateForDay}
+        />
       ) : view.mode === 'month' ? (
         <MonthView
           anchor={view.anchor}

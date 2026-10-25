@@ -1,10 +1,17 @@
 import { describe, expect, it } from 'vitest';
 
 import {
-  ACTIVE_EMPTY_MESSAGE,
-  UNAVAILABLE_MESSAGE,
+  activeEmptyMessage,
+  unavailableMessage,
   freeBusyPresentation,
 } from './freeBusyPresentation';
+
+// P6 step 2 made the two sentences functions of the display language. These
+// guards are about the JAPANESE, so they call with no argument -- which is
+// also the assertion that the default still answers exactly as the constants
+// did. The English side is covered in i18n/sharePage.i18n.test.ts.
+const UNAVAILABLE_MESSAGE = unavailableMessage();
+const ACTIVE_EMPTY_MESSAGE = activeEmptyMessage();
 
 describe('freeBusyPresentation', () => {
   it('maps loading and error straight through', () => {

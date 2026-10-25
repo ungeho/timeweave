@@ -2,6 +2,8 @@ import { Fragment, useMemo, type CSSProperties } from 'react';
 import type { EventOccurrence } from '../../types/event';
 import { categoryColor } from '../../utils/categoryColor';
 import { useMediaQuery } from '../../hooks/useMediaQuery';
+import { useLanguage, useTranslate } from '../../i18n/useLanguage';
+import { weekdayNamesShort } from '../../i18n/dateNames';
 import { buildMonthGrid, type MonthGridCell } from './monthGrid';
 import type { AllDayBand } from './allDayBands';
 import { EventChip, VisibilityIcon } from './EventChip';
@@ -21,8 +23,6 @@ interface Props {
   /** Opens the full day listing, from a day's single "+N". */
   onDayAgendaOpen: (dayKey: string) => void;
 }
-
-const WEEKDAY_LABELS = ['月', '火', '水', '木', '金', '土', '日'];
 
 /**
  * Item rows per day for the current viewport.
@@ -58,6 +58,12 @@ export function MonthView({
   onOccurrenceClick,
   onDayAgendaOpen,
 }: Props) {
+  const tr = useTranslate();
+  // The day headers are a DATE FORMAT, so they read the language rather
+  // than the dictionary. Until P6 flips the switch the provider hands out
+  // the default, so these render the same seven characters they always did.
+  const { language } = useLanguage();
+  const weekdays = weekdayNamesShort(language);
   const slots = useMonthSlots();
 
   const weeks = useMemo(() => {
@@ -81,7 +87,7 @@ export function MonthView({
   return (
     <div className="month" style={monthSlotsStyle(slots)}>
       <div className="month-weekdays">
-        {WEEKDAY_LABELS.map((w) => (
+        {weekdays.map((w) => (
           <div key={w} className="month-weekday">{w}</div>
         ))}
       </div>
@@ -105,7 +111,7 @@ export function MonthView({
                   style={{ gridColumn: ci + 1 }}
                   onClick={() => onDayClick(cell.dayKey)}
                 >
-                  <div className="month-cell-date">{cell.date.getDate()}</div>
+                  <div className="month-cell-date">{cell.dayOfMonth}</div>
                 </div>
               ))}
 
@@ -144,8 +150,8 @@ export function MonthView({
                       // timed events together: both open the same agenda. The
                       // spoken and hover text stay descriptive, since "+3" on its
                       // own says nothing about what it opens.
-                      aria-label={`他 ${day.hiddenCount} 件の予定を表示`}
-                      title={`他 ${day.hiddenCount} 件の予定を表示`}
+                      aria-label={tr('calendar.more.events', { count: day.hiddenCount })}
+                      title={tr('calendar.more.events', { count: day.hiddenCount })}
                     >
                       +{day.hiddenCount}
                     </button>
@@ -172,10 +178,12 @@ function MonthBand({
   band: AllDayBand;
   onOccurrenceClick: (occ: EventOccurrence) => void;
 }) {
+  const tr = useTranslate();
+  const { language } = useLanguage();
   const { event } = band.occurrence;
   const color = categoryColor(event.category);
-  const vis = visibilityMeta[event.visibility];
-  const shownTitle = eventDisplayTitle(event);
+  const vis = visibilityMeta(event.visibility, language);
+  const shownTitle = eventDisplayTitle(event, language);
   const style = {
     gridColumn: `${band.startIndex + 1} / span ${band.span}`,
     gridRow: band.lane + 2,
@@ -197,8 +205,8 @@ function MonthBand({
         e.stopPropagation();
         onOccurrenceClick(band.occurrence);
       }}
-      title={`${shownTitle}（${vis.label}）`}
-      aria-label={`${shownTitle}, ${vis.label}`}
+      title={tr('calendar.chip.title', { title: shownTitle, visibility: vis.label })}
+      aria-label={tr('calendar.chip.ariaLabel', { title: shownTitle, visibility: vis.label })}
     >
       {band.continuesLeft && <span className="cont-mark" aria-hidden>‹</span>}
       <VisibilityIcon visibility={event.visibility} />

@@ -30,6 +30,27 @@ const WEEKDAY_SET = new Set<string>(WEEKDAYS);
 const MAX_ITERATIONS = 3660;
 
 /**
+ * The largest INTERVAL the app WRITES (K13, P8-finish-3a.1). It is the
+ * server's: 0006 rrule_parse accepts INTERVAL only as ^[1-9][0-9]{0,3}$, so a
+ * rule with more is malformed there and the share page cannot answer for it.
+ * Every value up to it is plain digits when stringified (no "1e+23").
+ *
+ * READING is deliberately not narrowed: parseRRule still takes what it took, so
+ * a row already stored with a larger interval opens in the dialog and is
+ * refused only when saved again -- the owner can correct it.
+ */
+export const MAX_INTERVAL = 9999;
+
+/**
+ * The largest COUNT the app writes (K14, P8-finish-3a.2) -- again the server's:
+ * 0006 rrule_parse accepts COUNT only as ^[1-9][0-9]{0,6}$. Expansion cost does
+ * not grow with it: DAILY/WEEKLY find the occurrences in the window in closed
+ * form and COUNT only caps the index; MONTHLY walks at most MAX_ITERATIONS.
+ * Reading is not narrowed, for the same reason as MAX_INTERVAL.
+ */
+export const MAX_COUNT = 9_999_999;
+
+/**
  * Parse an RRULE string into a validated RecurrenceRule.
  * Throws UnsupportedRRuleError for any key/value outside the supported subset.
  */
@@ -121,6 +142,14 @@ export function parseRRule(rrule: string): RecurrenceRule {
  * (timed instant -> "...T...Z", all-day date -> "YYYYMMDD").
  */
 export function formatRRule(rule: RecurrenceRule): string {
+  // The last step before a rule is stored: never write an interval the server
+  // cannot read (K13). The form refuses these first, with a message.
+  if (!Number.isInteger(rule.interval) || rule.interval < 1 || rule.interval > MAX_INTERVAL) {
+    throw new UnsupportedRRuleError(`Invalid INTERVAL: ${rule.interval}`);
+  }
+  if (rule.count !== undefined && (!Number.isInteger(rule.count) || rule.count < 1 || rule.count > MAX_COUNT)) {
+    throw new UnsupportedRRuleError(`Invalid COUNT: ${rule.count}`);
+  }
   const parts = [`FREQ=${rule.freq}`];
   if (rule.interval !== 1) parts.push(`INTERVAL=${rule.interval}`);
   if (rule.byDay && rule.byDay.length > 0) parts.push(`BYDAY=${rule.byDay.join(',')}`);

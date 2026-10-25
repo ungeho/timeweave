@@ -14,12 +14,9 @@
  * logs, and for a revoked-or-unknown token the page must stay uninformative.
  */
 
+import { t } from '../../i18n/t';
+import { DEFAULT_LANGUAGE, type Language } from '../../i18n/types';
 import { FreeBusyRateLimitedError } from '../../errors';
-
-/** Always appended: an error state is never a claim that the owner is free. */
-const NOT_FREE_NOTE = '（この画面は「予定なし」を意味しません）';
-
-const GENERIC = '空き時間を取得できませんでした。時間をおいて再読み込みしてください。';
 
 /**
  * Banner text for a failed Free/Busy load, including the safety note.
@@ -27,8 +24,24 @@ const GENERIC = '空き時間を取得できませんでした。時間をおい
  * `cause` is whatever the promise rejected with, so it is typed as unknown:
  * network failures reject with a DOMException, the RPC with an Error, and a bug
  * could reject with anything at all.
+ *
+ * P6 STEP 2 GAVE IT THE LANGUAGE, and that had to include the LEAD as well as
+ * the note. The note and the generic sentence used to be module constants
+ * resolved with DEFAULT_LANGUAGE at import time; translating only those two
+ * would have produced the worst possible result for a rate-limit refusal --
+ * a Japanese lead from `cause.message` with an English note glued to it, one
+ * sentence in two languages. So the refusal is read through its own
+ * `localize(lang)`, which 0019's error class already carries.
+ *
+ * NOTHING ABOUT THE JAPANESE MOVES. `localize` returns `this.message` verbatim
+ * when the error was constructed with an explicit message, and otherwise
+ * re-resolves the same key with the same `retryAdvice` -- so for `lang` = ja
+ * every branch is byte-identical to the string this function used to build.
  */
-export function freeBusyErrorBanner(cause: unknown): string {
-  const lead = cause instanceof FreeBusyRateLimitedError ? cause.message : GENERIC;
-  return `${lead}${NOT_FREE_NOTE}`;
+export function freeBusyErrorBanner(cause: unknown, lang: Language = DEFAULT_LANGUAGE): string {
+  const lead =
+    cause instanceof FreeBusyRateLimitedError
+      ? cause.localize(lang)
+      : t('share.error.generic', lang);
+  return `${lead}${t('share.error.notFreeNote', lang)}`;
 }

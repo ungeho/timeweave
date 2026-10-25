@@ -2,6 +2,8 @@ import type { CSSProperties, MouseEvent } from 'react';
 import type { EventOccurrence, Visibility } from '../../types/event';
 import { formatTime } from '../../utils/datetime';
 import { categoryColor } from '../../utils/categoryColor';
+import { useLanguage, useTranslate } from '../../i18n/useLanguage';
+import { intlLocale } from '../../i18n/resolveLanguage';
 import { visibilityMeta } from './visibilityMeta';
 import { eventDisplayTitle } from './eventTitle';
 
@@ -53,12 +55,17 @@ export function VisibilityIcon({ visibility }: { visibility: Visibility }) {
  * visibility is shown with an icon + accessible label, never color alone.
  */
 export function EventChip({ occurrence, variant = 'chip', style, onClick }: Props) {
+  const tr = useTranslate();
+  // The start time is a DATE FORMAT. The zone stays the viewer’s own --
+  // formatTime passes no timeZone -- and only the locale follows the
+  // language, which is pinned to the default until P6.
+  const { language } = useLanguage();
   const { event } = occurrence;
   const color = categoryColor(event.category);
-  const vis = visibilityMeta[event.visibility];
+  const vis = visibilityMeta(event.visibility, language);
   // One value for the visible text, the tooltip and the accessible name, so an
   // untitled event never announces itself as ", " + a visibility.
-  const shownTitle = eventDisplayTitle(event);
+  const shownTitle = eventDisplayTitle(event, language);
 
   const colorVars = {
     '--cat-bg': color.bg,
@@ -77,10 +84,14 @@ export function EventChip({ occurrence, variant = 'chip', style, onClick }: Prop
       data-availability={event.availability}
       style={colorVars}
       onClick={onClick}
-      title={`${shownTitle}（${vis.label}）`}
-      aria-label={`${shownTitle}, ${vis.label}`}
+      title={tr('calendar.chip.title', { title: shownTitle, visibility: vis.label })}
+      aria-label={tr('calendar.chip.ariaLabel', { title: shownTitle, visibility: vis.label })}
     >
-      {!occurrence.allDay && <span className="event-chip-time">{formatTime(occurrence.start)}</span>}
+      {!occurrence.allDay && (
+        <span className="event-chip-time">
+          {formatTime(occurrence.start, intlLocale(language))}
+        </span>
+      )}
       <VisibilityIcon visibility={event.visibility} />
       <span className="event-chip-title">{shownTitle}</span>
     </button>

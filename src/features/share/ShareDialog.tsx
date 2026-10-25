@@ -16,6 +16,8 @@
  */
 
 import { useEffect, useRef, useState } from 'react';
+import { useIsMobile } from '../../hooks/useIsMobile';
+import { useDialogChrome } from '../../hooks/useDialogChrome';
 import {
   createShareLink,
   deleteShareLink,
@@ -24,8 +26,18 @@ import {
   setShareAvailable,
 } from '../../repositories/shareRepository';
 import type { CreatedShareLink, ShareLink } from '../../types/share';
-import { isoFromDatetimeLocalValue } from '../../utils/datetime';
+import { getUserTimeZone } from '../../utils/timezone';
+import { WallTimeNotice } from '../event/WallTimeNotice';
+import { shareExpiryFold, shareExpiryFromLocal, type ShareExpiryPick } from './shareExpiry';
+import { shareExpiryLabel } from './shareExpiryLabel';
+import { useLanguage, useTranslate } from '../../i18n/useLanguage';
+import { intlLocale } from '../../i18n/resolveLanguage';
 import { SHARE_LABEL_MAX, labelLengthError, shareLabelLength } from './shareLinkLabel';
+import {
+  shareDialogErrorText,
+  type ShareDialogError,
+  type ShareDialogNotice,
+} from './shareError';
 import {
   canDeleteShareLink,
   canSetShareAvailable,
@@ -35,38 +47,27 @@ import {
 
 const shareUrl = (token: string) => `${window.location.origin}/s/${token}`;
 
-const STATUS_LABEL = { active: '有効', expired: '期限切れ', revoked: '失効済' } as const;
-
-const CONFIRM_DELETE = 'このリンクの記録を完全に削除します。元に戻せません。';
-
-/**
- * 0015 returns false for a row that is absent, someone else's, or still active,
- * without distinguishing them. The delete button only appears on the owner's
- * revoked rows, so in practice this means the row is already gone -- another
- * tab, most likely. It is not a failure, so it is not shown as an error.
- */
-const DELETE_REFUSED = 'このリンクはすでに削除されたか、削除できない状態です。一覧を更新しました。';
-
-/**
- * 0022 returns false for a row that is absent, someone else's, revoked or
- * expired, without distinguishing them -- the same deliberate opacity 0015 has.
- * The toggle is only rendered on the owner's ACTIVE rows, so in practice this
- * means the row stopped being active between the render and the click: expired
- * on its own, or revoked in another tab.
- *
- * It is NOT reported as an error, because nothing failed; and it is NOT treated
- * as success, because the setting did not change. The list is refreshed so the
- * row redraws in whatever state it is actually in, and the switch returns to
- * the server's value rather than the one that was clicked.
- */
-const AVAILABLE_REFUSED =
-  'このリンクの設定を変更できませんでした。期限切れか失効している可能性があります。一覧を更新しました。';
+const STATUS_KEY = {
+  active: 'shareDialog.status.active',
+  expired: 'shareDialog.status.expired',
+  revoked: 'shareDialog.status.revoked',
+} as const;
 
 export function ShareDialog({ onClose }: { onClose: () => void }) {
+  const tr = useTranslate();
+  // Only for the expiry LINE. The expiry DECISION is shareLinkStatus’s, from
+  // the stored instant against `now` -- no locale reaches it.
+  const { language } = useLanguage();
   const [links, setLinks] = useState<ShareLink[]>([]);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [notice, setNotice] = useState<string | null>(null);
+  // NEITHER OF THESE HOLDS A SENTENCE. Both used to: `error` was filled from
+  // `e.message` or from `labelLengthError`, and `notice` from `tr(...)`, so
+  // both froze their wording at the moment they were set. A language change
+  // afterwards re-rendered every other string in this dialog and left these
+  // two in the old language. The error now keeps the cause (or the fact), the
+  // notice keeps its key, and both are read in `language` at render.
+  const [error, setError] = useState<ShareDialogError | null>(null);
+  const [notice, setNotice] = useState<ShareDialogNotice | null>(null);
 
   const [label, setLabel] = useState('');
   const [includePrivate, setIncludePrivate] = useState(true);
@@ -75,6 +76,29 @@ export function ShareDialog({ onClose }: { onClose: () => void }) {
   // time is a second, additive disclosure the owner has to choose.
   const [shareAvailableNew, setShareAvailableNew] = useState(false);
   const [expiresLocal, setExpiresLocal] = useState('');
+  // Which of two identical wall clocks the owner picked (E1, P8-c3.1). Bound to
+  // the value and the zone it was picked for; any change asks again.
+  const [expiryPick, setExpiryPick] = useState<ShareExpiryPick | null>(null);
+  // Past / unchosen are explained once Create has been pressed, then kept up to
+  // date as the field changes. A missing time is explained at once (P8-c3).
+  const [expiryAttempted, setExpiryAttempted] = useState(false);
+  const expiryInputRef = useRef<HTMLInputElement>(null);
+  // The browser's zone (E2), read on every render rather than once, so a device
+  // that changes zone while the dialog is open is judged in the zone it is in
+  // now; handleCreate reads it again for the same reason.
+  const timeZone = getUserTimeZone();
+  const expiry = shareExpiryFromLocal(expiresLocal, timeZone, expiryPick);
+  const expiryFoldCheck = shareExpiryFold(expiry);
+  const expiryMessage =
+    expiryAttempted && expiry.kind === 'past'
+      ? tr('shareDialog.expiry.past')
+      : expiryAttempted && expiry.kind === 'foldUnchosen'
+        ? tr('shareDialog.expiry.foldUnchosen')
+        : null;
+  const expiryDescribedBy =
+    [expiry.kind === 'gap' || expiryFoldCheck ? 'share-expiry-dst' : null, expiryMessage ? 'share-expiry-error' : null]
+      .filter(Boolean)
+      .join(' ') || undefined;
   const [creating, setCreating] = useState(false);
   const [justCreated, setJustCreated] = useState<CreatedShareLink | null>(null);
   const [copied, setCopied] = useState(false);
@@ -83,6 +107,17 @@ export function ShareDialog({ onClose }: { onClose: () => void }) {
   const [confirmingDeleteId, setConfirmingDeleteId] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [togglingId, setTogglingId] = useState<string | null>(null);
+  const [revokingId, setRevokingId] = useState<string | null>(null);
+  const isMobile = useIsMobile();
+  // Escape is blocked while a link is being created, deleted, toggled or
+  // revoked: those report their outcome into this dialog, and closing would
+  // throw away the only place the result appears.
+  useDialogChrome(
+    onClose,
+    () =>
+      creatingRef.current || deletingRef.current !== null ||
+      togglingRef.current !== null || revokingRef.current !== null,
+  );
 
   // A delete OR an available-toggle in flight disables every other mutating
   // control, so a second request can never be issued against a list that is
@@ -95,6 +130,22 @@ export function ShareDialog({ onClose }: { onClose: () => void }) {
   // opposite values, and whichever the server applied last would win, leaving
   // the switch showing a setting the owner did not choose.
   const togglingRef = useRef<string | null>(null);
+  /*
+    THE SAME DOOR, ON THE TWO HANDLERS THAT DID NOT HAVE ONE.
+
+    deletingRef and togglingRef above already say why state is not enough: two
+    presses delivered in one tick both see the render that disabled nothing
+    yet. Create and revoke were written without that guard --
+    `disabled={creating || busy}` is state, and revoke set neither flag -- so
+    the same double tap creates TWO share links, each with its own token that
+    the owner only sees once, or sends two revokes for one link.
+
+    Creating two is the one that matters: a token handed out in the banner is
+    the only time it is visible, so the second link exists, is live, and its
+    token is never shown. Nothing in the dialog would reveal it had happened.
+  */
+  const creatingRef = useRef(false);
+  const revokingRef = useRef<string | null>(null);
 
   /**
    * Any reload invalidates a pending confirmation: the row it referred to may
@@ -109,7 +160,7 @@ export function ShareDialog({ onClose }: { onClose: () => void }) {
     try {
       setLinks(await listShareLinks());
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError({ kind: 'caught', cause: e });
     } finally {
       setLoading(false);
     }
@@ -120,20 +171,38 @@ export function ShareDialog({ onClose }: { onClose: () => void }) {
   }, []);
 
   const handleCreate = async () => {
+    if (creatingRef.current) return;
     setError(null);
     setNotice(null);
     setConfirmingDeleteId(null);
     setCopied(false);
+    // The expiry is judged AGAIN here, with the zone and the clock of this
+    // moment -- not the render's. Nothing is sent for a time that does not
+    // exist (P8-c3), an unchosen fold (E1) or a time that is not in the future
+    // (E3). The last is a courtesy: the database CHECK expires_at > created_at,
+    // on the server's clock, stays the boundary.
+    const expiryNow = shareExpiryFromLocal(expiresLocal, getUserTimeZone(), expiryPick, Date.now());
+    if (expiryNow.kind !== 'none' && expiryNow.kind !== 'instant') {
+      setExpiryAttempted(true);
+      expiryInputRef.current?.focus();
+      return;
+    }
     // Normally unreachable through this input, which enforces the same product
     // limit with maxLength. The rule is stated once more at the submit boundary
     // for programmatic values and future input paths. The database's 200-byte
     // CHECK is a separate storage bound -- 50 UTF-16 units occupy at most 150
     // UTF-8 bytes, so it cannot fire for anything this guard accepts.
-    const tooLong = labelLengthError(label);
-    if (tooLong) {
-      setError(tooLong);
+    // The RULE is still shareLinkLabel's, and still asked the same way. What
+    // is stored is the FACT plus the number the sentence quotes -- not the
+    // sentence -- so the refusal follows the language like everything else.
+    // `max` rather than a re-measurement at render: the owner is still editing
+    // this field, and re-deriving would make the message vanish mid-keystroke,
+    // which is not when this dialog has ever cleared it.
+    if (labelLengthError(label) !== null) {
+      setError({ kind: 'labelTooLong', max: SHARE_LABEL_MAX });
       return;
     }
+    creatingRef.current = true;
     setCreating(true);
     try {
       // Set AT CREATION, in the same RPC call, rather than created and then
@@ -145,25 +214,39 @@ export function ShareDialog({ onClose }: { onClose: () => void }) {
       const created = await createShareLink({
         label: label.trim() || null,
         includePrivate,
-        expiresAt: expiresLocal ? isoFromDatetimeLocalValue(expiresLocal) : null,
+        expiresAt: expiryNow.kind === 'instant' ? expiryNow.iso : null,
         shareAvailable: shareAvailableNew,
       });
       setJustCreated(created);
       setLabel('');
       setExpiresLocal('');
+      setExpiryPick(null);
+      setExpiryAttempted(false);
       // includePrivate and shareAvailable deliberately KEEP their values: an
       // owner creating several links usually wants the same disclosure settings
       // for them, and resetting would quietly turn the choice off between two
       // creations.
       await refresh();
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError({ kind: 'caught', cause: e });
     } finally {
+      creatingRef.current = false;
       setCreating(false);
     }
   };
 
   const handleRevoke = async (id: string) => {
+    /*
+      Re-entry only, and only for this row. Revoke deliberately does NOT join
+      `busy`: that flag exists so a delete or a toggle cannot race a list
+      that is about to be replaced, and widening it here would disable
+      controls that were live before, which is a behaviour change this task
+      has no reason to make. Blocking a second revoke OF THE SAME LINK is
+      enough to stop the duplicate call.
+    */
+    if (revokingRef.current === id) return;
+    revokingRef.current = id;
+    setRevokingId(id);
     setError(null);
     setNotice(null);
     setConfirmingDeleteId(null);
@@ -172,7 +255,10 @@ export function ShareDialog({ onClose }: { onClose: () => void }) {
       if (justCreated?.id === id) setJustCreated(null);
       await refresh();
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError({ kind: 'caught', cause: e });
+    } finally {
+      revokingRef.current = null;
+      setRevokingId(null);
     }
   };
 
@@ -198,9 +284,14 @@ export function ShareDialog({ onClose }: { onClose: () => void }) {
     try {
       const deleted = await deleteShareLink(id);
       await refresh();
-      if (!deleted) setNotice(DELETE_REFUSED);
+      // 0015 returns false for a row that is absent, someone else's, or still
+      // active, without distinguishing them. The delete button only appears on
+      // the owner's revoked rows, so in practice this means the row is already
+      // gone -- another tab, most likely. It is not a failure, so it goes to
+      // `notice` rather than `error`.
+      if (!deleted) setNotice('shareDialog.deleteRefused');
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError({ kind: 'caught', cause: e });
     } finally {
       deletingRef.current = null;
       setDeletingId(null);
@@ -219,7 +310,7 @@ export function ShareDialog({ onClose }: { onClose: () => void }) {
    *
    * The three outcomes are kept apart on purpose:
    *   true   the setting is now `next`; the refreshed row shows it.
-   *   false  nothing changed and nothing failed (see AVAILABLE_REFUSED). The
+   *   false  nothing changed and nothing failed (see the call site below). The
    *          list is still refreshed, because the most likely cause is that the
    *          row is no longer active and the list is out of date.
    *   throw  the call did not land -- 28000 from an expired session, or the
@@ -237,9 +328,9 @@ export function ShareDialog({ onClose }: { onClose: () => void }) {
     try {
       const applied = await setShareAvailable(l.id, next);
       await refresh();
-      if (!applied) setNotice(AVAILABLE_REFUSED);
+      if (!applied) setNotice('shareDialog.availableRefused');
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError({ kind: 'caught', cause: e });
     } finally {
       togglingRef.current = null;
       setTogglingId(null);
@@ -259,32 +350,30 @@ export function ShareDialog({ onClose }: { onClose: () => void }) {
   const now = Date.now();
   const visible = visibleShareLinks(links, revokedOnly);
 
-  return (
-    <div className="modal-backdrop" onClick={onClose}>
-      <div className="modal" onClick={(e) => e.stopPropagation()} role="dialog" aria-modal="true">
-        <h3 className="modal-title">空き時間を共有</h3>
-
+  const body = (
+    <>
         {justCreated && (
           <div className="share-created" role="status">
-            <p className="share-created-title">共有リンクを作成しました</p>
+            <p className="share-created-title">{tr('shareDialog.created.title')}</p>
             <div className="share-url-row">
               <input className="share-url" readOnly value={shareUrl(justCreated.token)} onFocus={(e) => e.target.select()} />
-              <button className="btn" onClick={handleCopy}>{copied ? 'コピー済' : 'コピー'}</button>
+              <button className="btn" onClick={handleCopy}>{copied ? tr('shareDialog.created.copied') : tr('shareDialog.created.copy')}</button>
             </div>
             <p className="share-warn">
-              このURLは<strong>今だけ</strong>表示されます。閉じると再表示できません（トークンは保存されません）。
-              必要なら今すぐコピーして共有先へ渡してください。
+              {tr('shareDialog.created.warnBefore')}
+              <strong>{tr('shareDialog.created.warnEmphasis')}</strong>
+              {tr('shareDialog.created.warnAfter')}
             </p>
           </div>
         )}
 
         <div className="share-form">
           <label className="field">
-            <span>ラベル（任意・管理用）</span>
+            <span>{tr('shareDialog.label')}</span>
             <input
               value={label}
               onChange={(e) => setLabel(e.target.value)}
-              placeholder="例: 取引先A用"
+              placeholder={tr('shareDialog.labelPlaceholder')}
               maxLength={SHARE_LABEL_MAX}
             />
           </label>
@@ -298,7 +387,7 @@ export function ShareDialog({ onClose }: { onClose: () => void }) {
           </p>
           <label className="field checkbox">
             <input type="checkbox" checked={includePrivate} onChange={(e) => setIncludePrivate(e.target.checked)} />
-            <span>非公開(private)の予定も busy として含める</span>
+            <span>{tr('shareDialog.includePrivate')}</span>
           </label>
           {/* A SECOND, INDEPENDENT disclosure, not a refinement of the one
               above. include_private decides whether private events count
@@ -312,26 +401,53 @@ export function ShareDialog({ onClose }: { onClose: () => void }) {
               checked={shareAvailableNew}
               onChange={(e) => setShareAvailableNew(e.target.checked)}
             />
-            <span>「空き時間(Available)」として登録した予定も公開する</span>
+            <span>{tr('shareDialog.shareAvailable')}</span>
           </label>
           <p className="form-hint">
-            公開されるのは、予定を「空き時間」として明示的に登録した時間だけです。予定が入っていない時間が自動的に空き時間として公開されることはありません。
+            {tr('shareDialog.shareAvailableHint')}
           </p>
           <label className="field">
-            <span>有効期限（任意）</span>
-            <input type="datetime-local" value={expiresLocal} onChange={(e) => setExpiresLocal(e.target.value)} />
+            <span>{tr('shareDialog.expiresAt')}</span>
+            <input
+              type="datetime-local"
+              ref={expiryInputRef}
+              value={expiresLocal}
+              aria-invalid={expiry.kind === 'gap' || expiryMessage !== null ? true : undefined}
+              aria-describedby={expiryDescribedBy}
+              onChange={(e) => {
+                setExpiresLocal(e.target.value);
+                setExpiryPick(null);
+              }}
+            />
           </label>
+          {(expiry.kind === 'gap' || expiryFoldCheck) && (
+            <div id="share-expiry-dst">
+              <WallTimeNotice
+                name="share-expiry"
+                fieldLabel={tr('shareDialog.expiresAt')}
+                local={expiresLocal}
+                check={expiry.kind === 'gap' ? expiry.check : expiryFoldCheck!}
+                choice={expiry.kind === 'instant' || expiry.kind === 'past' ? (expiry.fold?.choice ?? null) : null}
+                onChoose={(choice) => setExpiryPick({ local: expiresLocal, timeZone, choice })}
+              />
+            </div>
+          )}
+          {expiryMessage && (
+            <p id="share-expiry-error" className="form-error" role="alert">
+              {expiryMessage}
+            </p>
+          )}
           <button className="btn primary" onClick={handleCreate} disabled={creating || busy}>
-            {creating ? '作成中…' : 'リンクを作成'}
+            {creating ? tr('shareDialog.creating') : tr('shareDialog.create')}
           </button>
         </div>
 
-        {error && <p className="form-error">{error}</p>}
-        {notice && <p className="share-notice" role="status">{notice}</p>}
+        {error && <p className="form-error">{shareDialogErrorText(error, language)}</p>}
+        {notice && <p className="share-notice" role="status">{tr(notice)}</p>}
 
         <div className="share-list">
           <div className="share-list-head">
-            <h4 className="share-list-title">既存のリンク</h4>
+            <h4 className="share-list-title">{tr('shareDialog.list.title')}</h4>
             <label className="share-filter">
               <input
                 type="checkbox"
@@ -341,15 +457,15 @@ export function ShareDialog({ onClose }: { onClose: () => void }) {
                   setConfirmingDeleteId(null);
                 }}
               />
-              <span>失効済みのみ表示</span>
+              <span>{tr('shareDialog.list.revokedOnly')}</span>
             </label>
           </div>
           {loading ? (
-            <p className="freebusy-loading">読み込み中…</p>
+            <p className="freebusy-loading">{tr('sharePage.loading')}</p>
           ) : links.length === 0 ? (
-            <p className="share-empty">リンクはまだありません。</p>
+            <p className="share-empty">{tr('shareDialog.list.empty')}</p>
           ) : visible.length === 0 ? (
-            <p className="share-empty">失効済みのリンクはありません。</p>
+            <p className="share-empty">{tr('shareDialog.list.noRevoked')}</p>
           ) : (
             <ul className="share-links">
               {visible.map((l) => {
@@ -370,12 +486,16 @@ export function ShareDialog({ onClose }: { onClose: () => void }) {
                     }
                   >
                     <div className="share-link-meta">
-                      <span className="share-link-label">{l.label || '(ラベルなし)'}</span>
-                      <span className="share-link-status">{STATUS_LABEL[status]}</span>
+                      <span className="share-link-label">{l.label || tr('shareDialog.list.noLabel')}</span>
+                      <span className="share-link-status">{tr(STATUS_KEY[status])}</span>
                       <span className="share-link-sub">
-                        {l.includePrivate ? 'private含む' : 'private除外'}
-                        {` / ${l.shareAvailable ? '空き時間を公開' : '空き時間は非公開'}`}
-                        {l.expiresAt ? ` / 期限 ${new Date(l.expiresAt).toLocaleString()}` : ''}
+                        {l.includePrivate ? tr('shareDialog.sub.includePrivate') : tr('shareDialog.sub.excludePrivate')}
+                        {` / ${l.shareAvailable ? tr('shareDialog.sub.availableShared') : tr('shareDialog.sub.availableHidden')}`}
+                        {l.expiresAt
+                          ? ` / ${tr('shareDialog.sub.expiresAt', {
+                              at: shareExpiryLabel(l.expiresAt, intlLocale(language), timeZone),
+                            })}`
+                          : ''}
                       </span>
                       {/* Only on rows 0022 would actually update. An expired or
                           revoked link shows its setting in the line above but
@@ -391,14 +511,14 @@ export function ShareDialog({ onClose }: { onClose: () => void }) {
                             onChange={() => void handleToggleAvailable(l)}
                           />
                           <span>
-                            空き時間(Available)を公開
-                            {toggling ? '（更新中…）' : ''}
+                            {tr('shareDialog.toggleAvailable')}
+                            {toggling ? tr('shareDialog.toggleUpdating') : ''}
                           </span>
                         </label>
                       )}
                       {status === 'expired' && (
                         <span className="share-link-hint">
-                          期限切れですが失効していません。削除するには、先に「失効」してください。
+                          {tr('shareDialog.expiredHint')}
                         </span>
                       )}
                     </div>
@@ -412,20 +532,26 @@ export function ShareDialog({ onClose }: { onClose: () => void }) {
                             setConfirmingDeleteId(l.id);
                           }}
                         >
-                          削除
+                          {tr('shareDialog.delete')}
                         </button>
                       ) : (
-                        <button className="btn danger" disabled={busy} onClick={() => handleRevoke(l.id)}>失効</button>
+                        <button
+                          className="btn danger"
+                          disabled={busy || revokingId === l.id}
+                          onClick={() => handleRevoke(l.id)}
+                        >
+                          {tr('shareDialog.revoke')}
+                        </button>
                       ))}
                     {confirming && (
                       <div className="share-link-confirm">
-                        <p className="share-link-confirm-text">{CONFIRM_DELETE}</p>
+                        <p className="share-link-confirm-text">{tr('shareDialog.confirmDelete')}</p>
                         <div className="share-link-confirm-actions">
                           <button className="btn danger" disabled={busy} onClick={() => handleDelete(l.id)}>
-                            {deleting ? '削除中…' : '削除する'}
+                            {deleting ? tr('shareDialog.deleting') : tr('shareDialog.deleteConfirm')}
                           </button>
                           <button className="btn" disabled={busy} onClick={() => setConfirmingDeleteId(null)}>
-                            キャンセル
+                            {tr('common.cancel')}
                           </button>
                         </div>
                       </div>
@@ -436,17 +562,55 @@ export function ShareDialog({ onClose }: { onClose: () => void }) {
             </ul>
           )}
           <p className="share-note">
-            既存リンクのURLは再表示できません（作成時のみ表示）。分からなくなった場合は失効して作り直してください。
+            {tr('shareDialog.note.urlOnce')}
           </p>
           <p className="share-note">
-            <strong>失効</strong>はURLを使えなくします。記録は残るため、総数の上限には数えられ続けます。
-            <strong>削除</strong>は失効済みリンクの記録そのものを消し、総数の枠を空けます（元に戻せません）。
+            <strong>{tr('shareDialog.note.revokeTerm')}</strong>{tr('shareDialog.note.revokeBody')}
+            <strong>{tr('shareDialog.note.deleteTerm')}</strong>{tr('shareDialog.note.deleteBody')}
           </p>
         </div>
 
+    </>
+  );
+
+  /*
+    THE SHEET, BECAUSE THIS SCREEN GROWS.
+
+    P8-b3 built .sheet-* for the event form and this reuses it -- but not
+    because reuse is free. It fits HERE for the reason it fitted there: the
+    content has no bound. A create form sits above a list of every live link,
+    and an owner with several links scrolls past all of them to reach close.
+    The settings dialog next door is two fields and does NOT get this; a
+    full-height sheet for two fields is a worse screen, not a more consistent
+    one.
+
+    Close sits in the header for the same reason save did: it is the way out,
+    and the way out should not be below an unbounded list.
+  */
+  if (isMobile) {
+    return (
+      <div className="sheet-backdrop">
+        <div className="sheet" role="dialog" aria-modal="true" aria-label={tr('shareDialog.title')}>
+          <div className="sheet-header">
+            <h2 className="sheet-title">{tr('shareDialog.title')}</h2>
+            <button className="btn" onClick={onClose}>{tr('common.close')}</button>
+          </div>
+          <div className="sheet-body">{body}</div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="modal-backdrop" onClick={onClose}>
+      <div className="modal" onClick={(e) => e.stopPropagation()} role="dialog" aria-modal="true">
+        <h3 className="modal-title">{tr('shareDialog.title')}</h3>
+
+        {body}
+
         <div className="modal-actions">
           <div className="spacer" />
-          <button className="btn" onClick={onClose}>閉じる</button>
+          <button className="btn" onClick={onClose}>{tr('common.close')}</button>
         </div>
       </div>
     </div>

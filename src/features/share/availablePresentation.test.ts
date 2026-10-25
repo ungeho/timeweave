@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
-  AVAILABLE_EMPTY_MESSAGE,
-  AVAILABLE_INDETERMINATE_MESSAGE,
+  availableEmptyMessage,
+  availableIndeterminateMessage,
   availablePresentation,
   availableSlots,
   hasDisclosedAvailable,
@@ -67,6 +67,13 @@ describe('availableSlots', () => {
  * calendar.
  */
 describe('the messages', () => {
+  // Called with no argument: these are the Japanese guards, and the default
+  // parameter is what keeps them true after P6 step 2 turned the two module
+  // constants into functions. English has its own guards, which repeat every
+  // safety claim below -- see i18n/sharePage.i18n.test.ts.
+  const AVAILABLE_INDETERMINATE_MESSAGE = availableIndeterminateMessage();
+  const AVAILABLE_EMPTY_MESSAGE = availableEmptyMessage();
+
   it('the indeterminate sentence does not claim there is no open time', () => {
     expect(AVAILABLE_INDETERMINATE_MESSAGE).not.toContain('ありません');
     expect(AVAILABLE_INDETERMINATE_MESSAGE).not.toContain('空いていません');

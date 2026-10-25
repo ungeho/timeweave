@@ -7,19 +7,51 @@
  * event dialog reads.
  */
 
+import { t } from '../../i18n/t';
+import { DEFAULT_LANGUAGE, isLanguage, type Language } from '../../i18n/types';
 import type { Availability } from '../../types/event';
 
 /**
- * Options for the control, in lifecycle order: the default first.
+ * Every availability, in lifecycle order: the default first, so the control
+ * opens on it.
  *
- * Labels are left untranslated for now, and they live here rather than in the
- * component for the same reason eventTitle's fallbacks do -- one place to swap
- * when a ja/en switch arrives, and no string repeated across files.
+ * A list of VALUES, not of {value,label} pairs. The label depends on the
+ * display language and the value does not, so pairing them in a module
+ * constant is what pinned the wording at import time -- the same shape
+ * VISIBILITIES and visibilityMeta were split into during P6.
  */
-export const AVAILABILITIES: { value: Availability; label: string }[] = [
-  { value: 'busy', label: 'Busy' },
-  { value: 'available', label: 'Available' },
-];
+export const AVAILABILITIES: readonly Availability[] = ['busy', 'available'];
+
+/**
+ * How one availability reads, in `lang`.
+ *
+ * WHY THIS IS NOW TRANSLATED. It was deliberately not, and the reason was
+ * sound: `Busy` and `Available` are the terms the rest of the product uses
+ * in Japanese too -- the share dialog says 空き時間(Available), the user
+ * guide says the same, and the stored value is `available` -- so routing
+ * the words through a dictionary invited a translation that would break
+ * that correspondence. What it cost was an owner reading a Japanese form
+ * with two English words in it and no Japanese name for either.
+ *
+ * The Japanese labels keep the English term in parentheses, so both hold:
+ * there is a Japanese name to read, and the word every other screen names.
+ * See the keys in i18n/ja.ts for the full argument.
+ *
+ * It takes no visibility, and must not: private and available are
+ * independent settings and the control offers both values unconditionally.
+ */
+export function availabilityLabel(
+  availability: Availability,
+  lang: Language = DEFAULT_LANGUAGE,
+): string {
+  // Checked at runtime as well as in the type, for the reason t() checks
+  // it: the value can arrive from owner_settings, so a row written by a
+  // newer build must not render undefined.
+  const l = isLanguage(lang) ? lang : DEFAULT_LANGUAGE;
+  return availability === 'busy'
+    ? t('event.availability.busy', l)
+    : t('event.availability.available', l);
+}
 
 /**
  * Whether the form must refuse an empty title.

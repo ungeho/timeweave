@@ -98,14 +98,22 @@ export function isoFromDateString(dateStr: string): string {
   return new Date(y, m - 1, d, 0, 0, 0, 0).toISOString();
 }
 
-/** Shift a "YYYY-MM-DD" date by whole days, returning "YYYY-MM-DD" (local). */
+/**
+ * Shift a "YYYY-MM-DD" date by whole days, returning "YYYY-MM-DD".
+ *
+ * Pure calendar arithmetic, in UTC fields (P8-c1). It used to go through a
+ * LOCAL Date midnight, which is the same answer everywhere except where the
+ * OS zone skipped a whole day: with the OS on Pacific/Apia, 2011-12-29 + 1
+ * came out as 2011-12-31. A calendar date has no zone; adding to one must not
+ * depend on where the computer is.
+ */
 export function addDaysToDateString(dateStr: string, days: number): string {
   const [y, m, d] = dateStr.split('-').map(Number);
   if (!y || !m || !d) {
     throw new Error(`Invalid date string: ${dateStr}`);
   }
-  const shifted = new Date(y, m - 1, d + days, 0, 0, 0, 0);
-  return `${pad(shifted.getFullYear(), 4)}-${pad(shifted.getMonth() + 1, 2)}-${pad(shifted.getDate(), 2)}`;
+  const shifted = new Date(Date.UTC(y, m - 1, d + days));
+  return `${pad(shifted.getUTCFullYear(), 4)}-${pad(shifted.getUTCMonth() + 1, 2)}-${pad(shifted.getUTCDate(), 2)}`;
 }
 
 /** Start of the local day containing `iso`, as UTC ISO. */
@@ -120,11 +128,49 @@ export function endOfLocalDay(iso: string): string {
   return new Date(d.getFullYear(), d.getMonth(), d.getDate() + 1, 0, 0, 0, 0).toISOString();
 }
 
-/** Format an instant for display in the user's locale/timezone. */
+/**
+ * THE 24-HOUR CLOCK, PINNED FOR EVERY LOCALE.
+ *
+ * Without this, `en-US` renders "09:00 AM" where `ja-JP` renders "09:00", and
+ * the time-grid gutter next to it is a hardcoded 00:00..23:00 ladder -- so an
+ * English viewer would read event times on one clock and the axis beside them
+ * on another. Pinning the clock is cheaper and clearer than teaching the
+ * gutter to switch, and it is what P4's brief asked for.
+ *
+ * `'h23'` and NOT `'h24'`: the two differ only at midnight, where h24 renders
+ * "24:00". The grid's own axis starts at 00:00, and an event at midnight has
+ * to agree with it.
+ *
+ * It is an option fragment rather than a whole format because the three
+ * functions below need different DATE parts while sharing one clock.
+ */
+export const CLOCK_24H: Intl.DateTimeFormatOptions = { hourCycle: 'h23' };
+
+/**
+ * Clock time of an instant, in the viewer's zone.
+ *
+ * `locale` is the BCP 47 tag, which callers get from `intlLocale(language)`.
+ * Omitting it falls back to the runtime's locale, which is what every caller
+ * did before P4 -- the parameter has existed since this function was written.
+ *
+ * NO `timeZone` OPTION, deliberately: the zone is the viewer's own, and which
+ * zone a time is shown in is a separate concern from which language names it.
+ */
 export function formatTime(iso: string, locale?: string): string {
-  return new Intl.DateTimeFormat(locale, { hour: '2-digit', minute: '2-digit' }).format(fromIso(iso));
+  return new Intl.DateTimeFormat(locale, {
+    hour: '2-digit',
+    minute: '2-digit',
+    ...CLOCK_24H,
+  }).format(fromIso(iso));
 }
 
+/**
+ * Date and time of an instant, with an abbreviated month.
+ *
+ * NOTHING CALLS THIS as of P4 step 2. It is kept, and kept consistent with
+ * the clock above, so that the next caller gets a 24-hour time rather than
+ * discovering the inconsistency in review.
+ */
 export function formatDateTime(iso: string, locale?: string): string {
   return new Intl.DateTimeFormat(locale, {
     year: 'numeric',
@@ -132,7 +178,23 @@ export function formatDateTime(iso: string, locale?: string): string {
     day: 'numeric',
     hour: '2-digit',
     minute: '2-digit',
+    ...CLOCK_24H,
   }).format(fromIso(iso));
+}
+
+/**
+ * Date and time of an instant, in each locale's own SHORT form.
+ *
+ * `toLocaleString` with no date or time parts, which is exactly what the share
+ * dialog's expiry line has always called -- so the Japanese comes out byte for
+ * byte as it did ("2026/8/29 9:00:00"). The only thing added is the clock pin,
+ * which the Japanese output already satisfied and the English did not.
+ *
+ * Distinct from `formatDateTime` on purpose: that one names the month and
+ * zero-pads the hour, which would have rewritten the Japanese expiry line.
+ */
+export function formatInstant(iso: string, locale?: string): string {
+  return fromIso(iso).toLocaleString(locale, CLOCK_24H);
 }
 
 function pad(n: number, width: number): string {

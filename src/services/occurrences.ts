@@ -56,6 +56,50 @@ export function normalizedSlotKey(value: string | null, allDay: boolean): string
 }
 
 /**
+ * The zone a master's expansion is anchored to: the row's own for a timed
+ * master (events.timezone, null for a legacy M0), none for an all-day one.
+ */
+function expansionZone(master: EventRow): string | null {
+  return master.allDay ? null : master.timezone;
+}
+
+/**
+ * Masters whose rule this client cannot expand (K12, P8-finish-3a): a rule the
+ * parser rejects (FREQ=YEARLY, COUNT with UNTIL, a malformed segment, an
+ * unknown BYDAY ...) or a zone the expander rejects. The app never writes one
+ * (the dialog builds every rule with formatRRule), but the database accepts any
+ * text, so a row written another way can carry one.
+ *
+ * Independent of any range: `expandRule` parses the rule and reads DTSTART in
+ * its zone before it looks at the window, so an empty window at DTSTART runs
+ * exactly the steps that can fail and generates nothing.
+ */
+export function unexpandableMasters(events: EventRow[]): EventRow[] {
+  const out: EventRow[] = [];
+  for (const ev of events) {
+    if (ev.recurrenceId || !ev.rrule) continue;
+    const { start } = rowSpan(ev);
+    try {
+      expandRule(ev.rrule, start, start, start, expansionZone(ev));
+    } catch {
+      out.push(ev);
+    }
+  }
+  return out;
+}
+
+export interface ExpandedEvents {
+  occurrences: EventOccurrence[];
+  /**
+   * Masters left out because their rule could not be expanded, in row order.
+   * Each is left out WITH every exception that points at it -- the series is
+   * one unit: an exception opened on its own would load the master's rule into
+   * the form, which cannot read it.
+   */
+  unexpandable: EventRow[];
+}
+
+/**
  * @param events all rows that could be relevant to the range
  * @param rangeStartIso inclusive UTC ISO
  * @param rangeEndIso exclusive UTC ISO
@@ -65,6 +109,21 @@ export function expandEvents(
   rangeStartIso: string,
   rangeEndIso: string,
 ): EventOccurrence[] {
+  return expandEventsWithIssues(events, rangeStartIso, rangeEndIso).occurrences;
+}
+
+/**
+ * expandEvents, plus the series it had to leave out. One series whose rule
+ * cannot be expanded used to throw out of here and take the whole calendar
+ * with it (K12); now that series is skipped and reported, and every other row
+ * is expanded exactly as before. The share page does not use this: its
+ * Busy/Available are the server's, which answers "incomplete" for such a row.
+ */
+export function expandEventsWithIssues(
+  events: EventRow[],
+  rangeStartIso: string,
+  rangeEndIso: string,
+): ExpandedEvents {
   const rangeStart = fromIso(rangeStartIso).getTime();
   const rangeEnd = fromIso(rangeEndIso).getTime();
 
@@ -81,6 +140,7 @@ export function expandEvents(
     fromIso(end).getTime() > rangeStart && fromIso(start).getTime() < rangeEnd;
 
   const out: EventOccurrence[] = [];
+  const unexpandable: EventRow[] = [];
 
   for (const ev of events) {
     if (ev.recurrenceId) continue; // exceptions are emitted alongside their master
@@ -126,13 +186,21 @@ export function expandEvents(
     // they are pure date arithmetic and a zone would be meaningless. A legacy
     // M0 master (timezone null) also passes null and keeps expanding in the
     // runtime's local zone, exactly as before Phase 5b-4.
-    const starts = expandRule(
-      ev.rrule,
-      span.start,
-      toIso(new Date(rangeStart - durationMs)),
-      rangeEndIso,
-      ev.allDay ? null : ev.timezone,
-    );
+    let starts: string[];
+    try {
+      starts = expandRule(
+        ev.rrule,
+        span.start,
+        toIso(new Date(rangeStart - durationMs)),
+        rangeEndIso,
+        expansionZone(ev),
+      );
+    } catch {
+      // The series is left out whole -- the exceptions are emitted below, after
+      // this, so `continue` skips them too -- and reported to the caller.
+      unexpandable.push(ev);
+      continue;
+    }
     for (const startIso of starts) {
       const endIso = toIso(new Date(fromIso(startIso).getTime() + durationMs));
       if (!overlapsRange(startIso, endIso)) continue;
@@ -168,5 +236,5 @@ export function expandEvents(
   }
 
   out.sort((a, b) => a.start.localeCompare(b.start));
-  return out;
+  return { occurrences: out, unexpandable };
 }

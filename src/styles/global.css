@@ -27,6 +27,7 @@ body {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 0.5rem;
   padding: 0.6rem 1rem;
   border-bottom: 1px solid var(--border);
   background: var(--bg-elevated);
@@ -36,6 +37,16 @@ body {
   font-weight: 700;
   font-size: 1.1rem;
   letter-spacing: 0.02em;
+  /* A flex item will not shrink below its own content unless told it may, and
+     the default min-width:auto is what let this row push the whole PAGE wider
+     than the viewport at 375px and below. Giving both sides of the header a
+     floor of zero makes the row shrink instead of the document grow -- which
+     is the fix, not `overflow-x: hidden` on an ancestor. That would leave the
+     content just as wide and merely stop you seeing it. */
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .app-main {
@@ -819,10 +830,28 @@ body {
   padding: 0.2rem 0.35rem;
   font-size: 0.78rem;
 }
+/* P8-mobile-2: all-day busy is the SAME filled bar as timed busy (it was a
+   muted grey chip, a third look for the same "busy"). It keeps its own class
+   for the label and the guards. */
 .freebusy-block.allday {
-  background: var(--bg-muted);
-  color: var(--text);
-  border: 1px solid var(--border);
+  font-weight: 600;
+  /* K11 (P8-finish-3a): the label is plain text, and Japanese may break
+     between any two characters, so at 641-748px a 7-column day read
+     「終日 予定あ／り」. keep-all breaks only at the space (「終日／予定あり」);
+     overflow-wrap is the fallback for a column narrower than one word, so
+     nothing can overflow. English breaks at spaces either way. */
+  word-break: keep-all;
+  overflow-wrap: anywhere;
+}
+/* The state in words, then the range; they wrap as a pair in a narrow column. */
+.freebusy-block {
+  display: flex;
+  flex-wrap: wrap;
+  column-gap: 0.4em;
+  align-items: baseline;
+}
+.freebusy-block-state {
+  font-weight: 600;
 }
 /* ---------- available blocks on the share page ----------
    An AVAILABLE block must not read as a weaker busy block, so it inverts the
@@ -858,6 +887,70 @@ body {
   color: var(--text-muted);
   text-align: center;
   font-size: 0.85rem;
+}
+.freebusy-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+/* ---------- share page legend (P8-mobile-2) ----------
+   The swatches are the blocks' own two looks -- a filled bar, and the page
+   surface inside an outline with the 45-degree hatch -- so the legend is read
+   by shape, not hue. */
+.freebusy-legend {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  padding: 0.6rem 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-elevated);
+}
+.freebusy-legend-title {
+  margin: 0;
+  font-size: 0.85rem;
+}
+.freebusy-legend-items {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem 1.25rem;
+  font-size: 0.85rem;
+}
+.freebusy-legend-items li {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  min-width: 0;
+}
+.freebusy-swatch {
+  flex: 0 0 auto;
+  width: 2.25rem;
+  height: 1rem;
+  border-radius: 4px;
+  background: var(--accent);
+}
+.freebusy-swatch.available {
+  background-color: var(--bg);
+  border: 1px solid var(--accent);
+  background-image: repeating-linear-gradient(
+    45deg,
+    color-mix(in oklab, var(--accent) 16%, transparent) 0 2px,
+    transparent 2px 8px
+  );
+}
+.freebusy-legend-note {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 0.8rem;
 }
 .freebusy-note {
   color: var(--text-muted);
@@ -1012,11 +1105,17 @@ body {
   display: flex;
   align-items: center;
   gap: 0.5rem;
+  /* See .brand: without this the actions keep their content width and the
+     overflow becomes the page's. */
+  min-width: 0;
 }
 .user-email {
   font-size: 0.85rem;
   color: var(--text-muted);
   max-width: 200px;
+  /* The ellipsis here never used to appear: with min-width:auto the element
+     kept its full content width and pushed the row instead of truncating. */
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1170,4 +1269,1750 @@ body {
 .allday-band[data-availability='available'] {
   --avail-hatch: 11%;
   --avail-period: 7px;
+}
+
+/* ---------- documentation (P7-e) ----------
+   Reading, not operating: the calendar fills the viewport and manages its own
+   scrolling, while an article is a column of text that the page scrolls. */
+
+.docs .app-main {
+  /* The calendar makes MAIN the scroller, which breaks #fragment links and
+     scrolls the sidebar separately from the prose. An article scrolls with
+     the page instead. */
+  overflow: visible;
+  padding: 0;
+}
+
+.docs-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 15rem) minmax(0, 1fr);
+  gap: 2rem;
+  max-width: 68rem;
+  margin: 0 auto;
+  padding: 1.5rem 1rem 4rem;
+  align-items: start;
+}
+
+/* The article is first in the DOM, for the heading outline; the sidebar is
+   first on screen, where a table of contents belongs. Placed explicitly
+   rather than with `order`, which does not move a grid item between
+   columns. */
+.docs-layout > .docs-nav {
+  grid-column: 1;
+  grid-row: 1;
+}
+
+.docs-layout > .docs-article {
+  grid-column: 2;
+  grid-row: 1;
+}
+
+/* One column when there is no sidebar. */
+.docs-layout:has(> .docs-article:only-child) {
+  grid-template-columns: minmax(0, 1fr);
+  max-width: 52rem;
+}
+
+.docs-brand {
+  color: inherit;
+  text-decoration: none;
+}
+
+/* ---------- chapter navigation ---------- */
+
+.docs-nav {
+  position: sticky;
+  top: 1rem;
+  font-size: 0.9rem;
+  line-height: 1.5;
+}
+
+.docs-nav ul {
+  list-style: none;
+  margin: 0.25rem 0 0;
+  padding: 0;
+}
+
+.docs-nav-group + .docs-nav-group {
+  margin-top: 1.1rem;
+}
+
+.docs-nav-heading {
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+  margin: 0;
+}
+
+.docs-nav-home {
+  display: block;
+  margin-bottom: 1rem;
+  color: var(--text-muted);
+  text-decoration: none;
+}
+
+.docs-nav-link {
+  display: block;
+  padding: 0.35rem 0.6rem;
+  color: var(--text);
+  text-decoration: none;
+  border-left: 2px solid transparent;
+  border-radius: 0 4px 4px 0;
+}
+
+.docs-nav-link:hover {
+  background: var(--bg-muted);
+}
+
+/* The current chapter is marked by a bar AND a weight change, never by colour
+   alone: it has to survive greyscale and a colour-vision difference. */
+.docs-nav-link.current {
+  border-left-color: var(--accent);
+  background: var(--bg-muted);
+  font-weight: 700;
+}
+
+/* ---------- the article ---------- */
+
+.docs-article {
+  min-width: 0;
+  line-height: 1.85;
+}
+
+.docs-body,
+.docs-index {
+  /* Roughly 40 Japanese characters a line. Past that the eye loses the start
+     of the next line, which matters more in a script with no word spaces. */
+  max-width: 42rem;
+}
+
+.docs-article h1 {
+  font-size: 1.7rem;
+  line-height: 1.4;
+  margin: 0 0 0.75rem;
+}
+
+.docs-body h2 {
+  font-size: 1.3rem;
+  line-height: 1.5;
+  margin: 2.5rem 0 0.75rem;
+  padding-bottom: 0.3rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.docs-body h3 {
+  font-size: 1.05rem;
+  line-height: 1.6;
+  margin: 1.8rem 0 0.5rem;
+}
+
+.docs-body > h1:first-child {
+  font-size: 1.7rem;
+  line-height: 1.4;
+  margin: 0 0 1rem;
+}
+
+.docs-body p {
+  margin: 0.9rem 0;
+}
+
+.docs-body ul,
+.docs-body ol {
+  padding-left: 1.4rem;
+}
+
+.docs-body li + li {
+  margin-top: 0.3rem;
+}
+
+.docs-body code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.88em;
+  background: var(--bg-muted);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0.08em 0.35em;
+  /* A long path or rrule must wrap rather than widen the column. */
+  overflow-wrap: anywhere;
+}
+
+.docs-body pre {
+  background: var(--bg-muted);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.9rem;
+  overflow-x: auto;
+}
+
+.docs-body pre code {
+  background: none;
+  border: 0;
+  padding: 0;
+  overflow-wrap: normal;
+}
+
+.docs-body blockquote {
+  margin: 1rem 0;
+  padding: 0.2rem 0 0.2rem 1rem;
+  border-left: 3px solid var(--border);
+  color: var(--text-muted);
+}
+
+.docs-body a {
+  color: var(--accent);
+}
+
+.docs-body hr {
+  border: 0;
+  border-top: 1px solid var(--border);
+  margin: 2.5rem 0;
+}
+
+/* ---------- tables ----------
+   The wrapper is emitted by the generator. It scrolls inside its own box, so
+   a wide comparison table never widens the article or pushes prose off a
+   phone. */
+
+.doc-table {
+  overflow-x: auto;
+  margin: 1.1rem 0;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.doc-table table {
+  border-collapse: collapse;
+  width: 100%;
+  /* Below this a table stops being readable and should scroll instead. */
+  min-width: 28rem;
+  font-size: 0.93rem;
+  line-height: 1.6;
+}
+
+.doc-table th,
+.doc-table td {
+  border-bottom: 1px solid var(--border);
+  padding: 0.5rem 0.7rem;
+  text-align: left;
+  vertical-align: top;
+}
+
+.doc-table th {
+  background: var(--bg-muted);
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.doc-table tr:last-child td {
+  border-bottom: 0;
+}
+
+/* ---------- images ----------
+   The generator gives every img its intrinsic width and height, which is what
+   makes these rules enough: a 402px dialog shot stays 402px instead of being
+   stretched across the column, a 1008px calendar shrinks to fit, and the box
+   is reserved before the file arrives so nothing jumps. */
+
+.docs-body .doc-figure {
+  display: block;
+  margin: 1.2rem 0;
+  width: fit-content;
+  max-width: 100%;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+  line-height: 0;
+}
+
+.docs-body .doc-figure img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+}
+
+.docs-body .doc-figure:hover {
+  border-color: var(--accent);
+}
+
+/* ---------- on this page ---------- */
+
+.docs-toc {
+  margin: 1.5rem 0 2rem;
+  padding: 0.8rem 1rem;
+  background: var(--bg-muted);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 0.9rem;
+  line-height: 1.7;
+}
+
+.docs-toc-heading {
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+  margin: 0 0 0.4rem;
+}
+
+.docs-toc ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  columns: 2;
+  column-gap: 1.5rem;
+}
+
+.docs-toc li {
+  break-inside: avoid;
+}
+
+/* ---------- index ---------- */
+
+.docs-lead {
+  color: var(--text-muted);
+  margin: 0 0 1.5rem;
+}
+
+.docs-index-group h2 {
+  font-size: 1rem;
+  margin: 2rem 0 0.6rem;
+  color: var(--text-muted);
+}
+
+.docs-index-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.5rem;
+}
+
+.docs-index-link {
+  display: block;
+  padding: 0.75rem 0.9rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  text-decoration: none;
+  color: inherit;
+}
+
+.docs-index-link:hover {
+  border-color: var(--accent);
+  background: var(--bg-muted);
+}
+
+.docs-index-title {
+  display: block;
+  font-weight: 700;
+}
+
+.docs-index-summary {
+  display: block;
+  margin-top: 0.15rem;
+  font-size: 0.88rem;
+  color: var(--text-muted);
+  line-height: 1.6;
+}
+
+/* ---------- language switch and fallback ---------- */
+
+.docs-langswitch {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin: 0 0 1.25rem;
+  font-size: 0.87rem;
+}
+
+.docs-langswitch-label {
+  color: var(--text-muted);
+}
+
+.docs-lang {
+  padding: 0.3rem 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  text-decoration: none;
+  color: var(--text);
+}
+
+.docs-lang.current {
+  border-color: var(--accent);
+  background: var(--bg-muted);
+  font-weight: 700;
+}
+
+.docs-fallback {
+  margin-bottom: 1.5rem;
+}
+
+/* ---------- previous / next ---------- */
+
+.docs-pager {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-top: 3rem;
+  padding-top: 1.5rem;
+  border-top: 1px solid var(--border);
+}
+
+.docs-pager-link {
+  flex: 0 1 auto;
+  max-width: 48%;
+  padding: 0.7rem 0.9rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  text-decoration: none;
+  color: inherit;
+}
+
+.docs-pager-link.next {
+  margin-left: auto;
+  text-align: right;
+}
+
+.docs-pager-link:hover {
+  border-color: var(--accent);
+}
+
+.docs-pager-label {
+  display: block;
+  font-size: 0.78rem;
+  color: var(--text-muted);
+}
+
+.docs-pager-title {
+  display: block;
+  font-weight: 700;
+  line-height: 1.5;
+}
+
+@media (max-width: 860px) {
+  /* One column. The chapter list moves below the prose so a phone opens on
+     the article rather than on a list to scroll past every time. The nav is
+     still first in the DOM, so a keyboard reaches it before the body. */
+  .docs-layout {
+    display: flex;
+    flex-direction: column;
+    /* NOT inherited from the desktop rule. In a column flex container
+       align-items governs WIDTH, and `start` shrink-wraps each item to its
+       own max-content -- which here is the table min-width, 28rem. The
+       article then grew to 450px inside a 360px phone and the whole page
+       scrolled sideways. `stretch` makes each item the container width and
+       lets the table scroll inside its own box, which was the intent. */
+    align-items: stretch;
+    gap: 1.5rem;
+    padding: 1rem 0.9rem 3rem;
+  }
+
+  /* Belt and braces for the same failure: a flex item will not shrink below
+     its content min-width unless told it may. */
+  .docs-layout > * {
+    min-width: 0;
+    max-width: 100%;
+  }
+
+  /* No reordering needed: the article is already first in the DOM, which is
+     also the order a phone wants -- prose first, chapter list after it. */
+  .docs-layout > .docs-nav {
+    position: static;
+    padding-top: 1.5rem;
+    border-top: 1px solid var(--border);
+  }
+
+  .docs-nav-link {
+    /* A comfortable touch target. */
+    padding: 0.6rem;
+  }
+
+  .docs-article h1 {
+    font-size: 1.45rem;
+  }
+
+  .docs-body h2 {
+    font-size: 1.18rem;
+    margin-top: 2rem;
+  }
+
+  .docs-toc ul {
+    columns: 1;
+  }
+
+  .docs-pager {
+    flex-direction: column;
+  }
+
+  .docs-pager-link {
+    max-width: none;
+  }
+
+  .docs-pager-link.next {
+    text-align: left;
+    margin-left: 0;
+  }
+}
+
+/* ---------- documentation: keyboard and focus (P7-f) ---------- */
+
+/* Off screen until focused, then a real control at the top left. Not
+   display:none, which would take it out of the Tab order entirely and leave
+   nine chapter links between a keyboard reader and the prose on every page. */
+.docs-skip {
+  position: absolute;
+  left: -9999px;
+  top: 0;
+  z-index: 10;
+  padding: 0.6rem 1rem;
+  background: var(--bg-elevated);
+  border: 1px solid var(--accent);
+  border-radius: 0 0 6px 0;
+  color: var(--text);
+  text-decoration: none;
+}
+
+.docs-skip:focus {
+  left: 0;
+}
+
+/* The browser default outline is a hairline on this surface. Every focusable
+   thing in the guide gets the same visible ring instead.
+
+   The transparent outline underneath is not decoration: in forced-colors mode
+   the browser drops box-shadow and repaints the outline in a system colour,
+   which is the only cue left there. The same pairing .event-chip uses. */
+.docs a:focus-visible,
+.docs button:focus-visible,
+.docs [tabindex]:focus-visible {
+  outline: 2px solid transparent;
+  outline-offset: 2px;
+  box-shadow: 0 0 0 2px var(--bg), 0 0 0 4px var(--accent);
+  border-radius: 4px;
+}
+
+/* The main landmark is focused after a page change so the move is announced.
+   It is not an interactive control, so it must not look like one. */
+.docs-main:focus,
+.docs-main:focus-visible {
+  outline: none;
+  box-shadow: none;
+}
+
+/* A table scrolled with the keyboard needs to show where focus is. */
+.docs-body .doc-table:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+/* ---------- long words and narrow screens ---------- */
+
+/* A Japanese heading has no spaces to break at, and a chapter title in the
+   sidebar can be longer than a phone is wide. */
+.docs-nav-link,
+.docs-index-title,
+.docs-pager-title,
+.docs-body h1,
+.docs-body h2,
+.docs-body h3 {
+  overflow-wrap: anywhere;
+}
+
+/* A bare URL in the prose must not widen the column. */
+.docs-body a {
+  overflow-wrap: anywhere;
+}
+
+/* ---------- mobile layout boundary (P8-b1) ----------
+   Mirrors MOBILE_QUERY in src/utils/viewport.ts. The number lives in both
+   places because CSS cannot read TypeScript; a test reads this stylesheet and
+   checks the two agree. */
+
+@media (max-width: 719px) {
+  /* The identity line leaves the header on a phone. It is not an action, it
+     is the widest thing in the row, and it is the single element that made
+     the page scroll sideways at 320-375px (measured in the P8-a audit:
+     hiding it alone took scrollWidth from 387 back to the viewport width).
+
+     It is NOT lost: the settings dialog shows it, which is also where the
+     account's other settings are. P8-b2 moves the remaining header actions
+     into a menu and may show it there too. */
+  .user-email {
+    display: none;
+  }
+
+  /*
+    44px targets. The P8-a audit counted 16-17 controls below that at every
+    phone width, the header's among them -- 31px tall, which is a third short
+    of what a fingertip needs.
+
+    Height only: the widths are already set by their labels, and forcing a
+    minimum width would push the row back over the viewport, which is the
+    thing .user-email was hidden to stop.
+  */
+  .app-header .btn,
+  /* The share button sits outside the mobile calendar, in the page topbar,
+     so neither of the rules above reached it -- it was the one control still
+     31px tall on a phone. */
+  .calendar-topbar .btn {
+    min-height: 44px;
+    display: inline-flex;
+    align-items: center;
+  }
+}
+
+/* Who is signed in, in the settings dialog. Not a control: it is the one
+   thing in here that cannot be changed, so it reads as a line of text rather
+   than as a field with an empty box. */
+.settings-identity {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.4rem;
+  margin: 0 0 0.3rem;
+  font-size: 0.85rem;
+}
+.settings-identity-label {
+  color: var(--text-muted);
+}
+.settings-identity-value {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+/* ---------- mobile calendar (P8-b2) ----------
+   Rendered only below MOBILE_QUERY; the desktop grid is a different component
+   and keeps its own rules untouched. The classes here are new, so nothing the
+   desktop styles can be affected by them. */
+
+.mobile-calendar {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  min-width: 0;
+}
+
+.mobile-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  min-width: 0;
+}
+
+.mobile-bar-title {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  font-size: 1rem;
+  text-align: center;
+  overflow-wrap: anywhere;
+}
+
+.mobile-bar-modes .btn {
+  flex: 1;
+}
+
+/* 44px targets throughout: the P8-a audit counted 16-17 controls below that
+   on every phone width. */
+.mobile-bar .btn {
+  min-height: 44px;
+}
+
+.mobile-bar .btn.icon {
+  min-width: 44px;
+}
+
+/* ---------- date strip ---------- */
+
+.date-strip {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 0.15rem;
+}
+
+.date-strip-day {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.1rem;
+  /* 41px at 320px wide, which is what a weekday initial, a two-digit number
+     and a dot need -- and the whole reason the strip replaces a grid whose
+     cells had to hold a title as well. */
+  min-height: 56px;
+  padding: 0.3rem 0.1rem;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: none;
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+}
+
+.date-strip-day:hover {
+  background: var(--bg-muted);
+}
+
+.date-strip-weekday {
+  font-size: 0.68rem;
+  color: var(--text-muted);
+}
+
+.date-strip-number {
+  font-size: 1rem;
+  font-weight: 600;
+  line-height: 1.2;
+}
+
+/* Today is marked by a ring, the selection by a fill: two different cues, so
+   a day that is both still reads as both. Neither is colour alone -- the
+   selected day also carries aria-current. */
+.date-strip-day.today .date-strip-number {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 50%;
+}
+
+.date-strip-day.selected {
+  background: var(--accent);
+  color: var(--accent-contrast);
+}
+
+.date-strip-day.selected .date-strip-weekday {
+  color: inherit;
+}
+
+/* ---------- density ----------
+   Size AND shade change together, so the three states survive greyscale. The
+   accessible name on the button says the same thing in words, which is what a
+   screen reader gets instead. */
+
+.date-strip-density,
+.compact-month-density {
+  display: block;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+[data-density='none'] {
+  width: 4px;
+  height: 4px;
+  background: none;
+}
+
+[data-density='few'] {
+  width: 4px;
+  height: 4px;
+  opacity: 0.55;
+}
+
+[data-density='many'] {
+  width: 7px;
+  height: 7px;
+  opacity: 0.95;
+}
+
+/* ---------- agenda ---------- */
+
+.mobile-agenda {
+  min-width: 0;
+}
+
+/* P8-mobile-1 (M4): the browser keeps vertical scrolling and pinch-zoom here;
+   only a horizontal drag reaches the swipe handler (mobile/swipe.ts). */
+.mobile-swipe-area {
+  touch-action: pan-y pinch-zoom;
+  min-width: 0;
+}
+
+.mobile-agenda .day-agenda-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+/* A row is the whole width here, which is the point: the month cell it
+   replaces was 46px and cut titles to one character. */
+.mobile-agenda .event-chip {
+  width: 100%;
+  min-height: 44px;
+  align-items: center;
+}
+
+.mobile-add {
+  width: 100%;
+  min-height: 44px;
+  margin-top: 0.6rem;
+}
+
+/* ---------- compact month ----------
+   A map of where events are, not a list of what they are. */
+
+.compact-month {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  min-width: 0;
+}
+
+.compact-month-weekdays,
+.compact-month-week {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 0.15rem;
+}
+
+.compact-month-weekdays {
+  font-size: 0.7rem;
+  color: var(--text-muted);
+  text-align: center;
+}
+
+.compact-month-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+
+.compact-month-cell {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.15rem;
+  min-height: 44px;
+  padding: 0.2rem 0;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: none;
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+}
+
+.compact-month-cell:hover {
+  background: var(--bg-muted);
+}
+
+.compact-month-cell.muted .compact-month-number {
+  color: var(--text-muted);
+  opacity: 0.6;
+}
+
+.compact-month-cell.today .compact-month-number {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 50%;
+}
+
+.compact-month-cell.selected {
+  background: var(--accent);
+  color: var(--accent-contrast);
+}
+
+.compact-month-number {
+  font-size: 0.9rem;
+  line-height: 1.2;
+}
+
+/* ---------- mobile event sheet (P8-b3) ----------
+   A separate shell from .modal, not an override of it: the desktop dialog
+   keeps every rule it had, and nothing here can reach it. */
+
+.sheet-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  background: var(--bg);
+}
+
+.sheet {
+  /*
+    dvh, NOT vh. On a phone `100vh` is the viewport with the browser chrome
+    retracted -- a height the page does not actually have while the address
+    bar is showing -- so a vh-sized sheet is taller than the screen and its
+    header scrolls away. `dvh` tracks the viewport as it actually is.
+
+    It is also what shrinks when a soft keyboard opens on Android Chrome, so
+    the header and footer stay on screen and only the body loses room. iOS
+    Safari does not resize the layout viewport for the keyboard: there the
+    keyboard overlays the sheet, the browser scrolls the focused field into
+    view, and the header stays reachable because it is position:sticky inside
+    a scrolling column rather than pinned to a viewport that moved. Measured
+    in neither -- see docs/p8-tasks.md for what is still unverified.
+  */
+  height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+}
+
+/* Three boxes, and only the middle one scrolls. */
+.sheet-header,
+.sheet-footer {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 0.75rem;
+  background: var(--bg-elevated);
+}
+
+.sheet-header {
+  border-bottom: 1px solid var(--border);
+  /* Sticky as well as flex-fixed: if a browser gives the sheet more height
+     than the screen -- iOS with the keyboard up -- this keeps save reachable
+     rather than letting it scroll off the top. */
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+
+.sheet-footer {
+  border-top: 1px solid var(--border);
+  justify-content: flex-end;
+}
+
+.sheet-title {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  font-size: 1rem;
+  text-align: center;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sheet-header .btn,
+.sheet-footer .btn {
+  min-height: 44px;
+  flex: 0 0 auto;
+}
+
+.sheet-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  /* Momentum scrolling, and a scroll that stops at the ends rather than
+     handing the gesture to whatever is behind. */
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+  display: flex;
+  flex-direction: column;
+  gap: 0.7rem;
+  padding: 0.9rem 0.75rem 2rem;
+  min-width: 0;
+}
+
+/* 44px inputs. The P8-a audit measured 8 of 9 at about 34px.
+
+   NOT just direct children of .field: the recurrence fieldset nests its
+   interval, count and weekday controls one level deeper, and a first version
+   of this rule left nine of them at 34px on an edit sheet. Typed inputs get
+   the height; a checkbox or radio is a fixed glyph, so its LABEL carries the
+   target instead. */
+.sheet-body input:not([type='checkbox']):not([type='radio']),
+.sheet-body select,
+.sheet-body textarea,
+.sheet-body .btn {
+  min-height: 44px;
+}
+
+.sheet-body label:has(> input[type='checkbox']),
+.sheet-body label:has(> input[type='radio']),
+.sheet-body .weekday-chip {
+  min-height: 44px;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.sheet-body textarea {
+  min-height: 88px;
+}
+
+/* P8-mobile-1 (M3): "Done" under the notes while they are being edited. Enter
+   stays a new line; this is the way out that a phone keyboard does not offer
+   for a multi-line field. Right-aligned so it sits where the thumb is. */
+.memo-done-row {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: -0.35rem;
+}
+
+.memo-done-row .btn {
+  min-height: 44px;
+  min-width: 88px;
+}
+
+/* The two-up rows stack: at 320px a pair of date fields side by side leaves
+   neither readable. The 640px rule already does this for .field-row inside
+   the modal; this is the sheet's own copy so it does not depend on which
+   breakpoint happens to apply. */
+.sheet-body .field-row {
+  flex-direction: column;
+  gap: 0.7rem;
+}
+
+/* Nothing in the form may widen the column: a long title, a long category or
+   a long translated label wraps instead. */
+.sheet-body .field > span,
+.sheet-body .form-hint,
+.sheet-body .form-error {
+  overflow-wrap: anywhere;
+}
+
+/* The edit-scope and time-zone rows are buttons beside text; on a phone they
+   stack so neither is squeezed. */
+.sheet-body .scope-row,
+.sheet-body .tz-row {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0.5rem;
+}
+
+.sheet-body .scope-option {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-height: 44px;
+}
+
+/* The error is what a failed save produces, and the sheet scrolls it into
+   view; make it unmistakable when it arrives. */
+.sheet-body .form-error {
+  padding: 0.5rem 0.6rem;
+  border: 1px solid var(--danger);
+  border-radius: 6px;
+  background: var(--danger-bg);
+}
+
+/* ---------- share sheet (P8-b4) ----------
+   The share dialog reuses .sheet-* above; these are the rules its own
+   contents need, and they are scoped to .sheet-body so the desktop modal
+   keeps the layout it has. */
+
+/* A share URL is one long unbreakable token. In a flex row beside a copy
+   button it is the element that decides the width, so it gets a basis of zero
+   and is allowed to shrink -- without this the sheet is as wide as the URL. */
+.sheet-body .share-url-row {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.sheet-body .share-url {
+  width: 100%;
+  min-width: 0;
+}
+
+/* The row stacks: a label, a status and two destructive buttons side by side
+   at 320px leaves each about 60px wide, and revoke and delete become two
+   identical red slivers. Stacked, the label gets the full width and the
+   buttons get a row of their own. */
+.sheet-body .share-link-item {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0.6rem;
+}
+
+.sheet-body .share-link-meta {
+  min-width: 0;
+}
+
+/* A label the owner typed, and the sub-line that carries the disclosure
+   settings and the expiry. Neither may widen the sheet. */
+.sheet-body .share-link-label,
+.sheet-body .share-link-sub,
+.sheet-body .share-link-status,
+.sheet-body .share-created,
+.sheet-body .share-warn {
+  overflow-wrap: anywhere;
+}
+
+/* Revoke and delete are direct children of the row (there is no wrapper), so
+   the column above already gives each a full-width line of its own. Both are
+   destructive, and on a phone they are told apart by their words at a
+   readable size rather than by position in a cramped row. */
+.sheet-body .share-link-item > .btn {
+  min-height: 44px;
+}
+
+/* The delete confirmation: its two buttons share a line, since by then the
+   question above them has said which is which. */
+.sheet-body .share-link-confirm-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.sheet-body .share-link-confirm-actions .btn {
+  flex: 1 1 auto;
+  min-height: 44px;
+}
+
+.sheet-body .share-link-confirm-text {
+  overflow-wrap: anywhere;
+}
+
+.sheet-body .share-link-toggle,
+.sheet-body .share-filter {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-height: 44px;
+}
+
+.sheet-body .share-list-head {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0.4rem;
+}
+
+/* The same on the phone, where the fields are further apart and the save
+   button is in the header -- so the mark has to carry on its own. */
+.sheet-body .field > input[type='date']:required:invalid,
+.sheet-body .field > input[type='datetime-local']:required:invalid {
+  border-color: var(--danger);
+}
+
+/* ---------- end of sheet rules ----------
+   Everything above, from the .sheet-backdrop banner, styles the mobile
+   sheets and nothing else. A test slices between the two markers and
+   refuses any mention of .modal inside them, so the desktop dialogs cannot
+   be changed by a rule meant for a phone. Rules BELOW this line are free to
+   name .modal -- that is what the next block is for. */
+
+/* ---------- settings on a narrow screen (P8-b4) ----------
+   NOT a sheet. Two fields and an account line do not need the whole screen,
+   and a full-height sheet for them would be more chrome than content. It
+   stays the modal it is; these rules only make that modal fit a phone. */
+@media (max-width: 719px) {
+  .modal {
+    width: 100%;
+    max-width: none;
+    max-height: 90dvh;
+  }
+
+  .modal-actions .btn,
+  .modal .field > input,
+  .modal .field > select {
+    min-height: 44px;
+  }
+
+  /* An address like a.very.long.name@a-long-domain.example is one token to a
+     line breaker. Without this it sets the modal's width, and the page
+     scrolls sideways -- the same fault P8-b1 fixed in the header, arriving
+     again by the route b1 opened when it moved the address in here. */
+  .settings-identity {
+    display: flex;
+    flex-direction: column;
+    gap: 0.15rem;
+  }
+
+  .settings-identity-value {
+    overflow-wrap: anywhere;
+  }
+
+  .modal .field-row {
+    flex-direction: column;
+    gap: 0.7rem;
+  }
+}
+
+/* ---------- emptied required dates (P8-b5) ----------
+   These four controls are always filled when the form opens, so :invalid
+   means the owner emptied one -- or typed half of one, which reads the same
+   way. Marking it the moment it happens is what the `required` attribute
+   actually buys here: MEASURED on Windows Chrome 155, required does not
+   remove any clear affordance and does not stop a Delete from emptying the
+   field. It only sets valueMissing, which is what this selector reads.
+
+   It does not refuse anything. Saving is still refused by the check in
+   buildSaveResult, with a sentence; this is the earlier, quieter signal that
+   says WHICH field, while the owner is still looking at it. */
+.field > input[type='date']:required:invalid,
+.field > input[type='datetime-local']:required:invalid {
+  border-color: var(--danger);
+}
+
+/* ---------- date and time inputs (P8-b5.6b-2) ----------
+   The event form's date/time inputs, the calendar and the clock
+   (src/features/event/datetimeInput). Theme tokens only, so light and dark
+   both work. Not inside the sheet section above: these rules serve the modal
+   and the sheet alike, and the 44px rule there already reaches the inputs. */
+
+.dt-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.dt-pair-inputs {
+  display: flex;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+}
+.dt-pair-inputs > .dt-field:first-child {
+  flex: 1 1 9.5rem;
+}
+.dt-pair-inputs > .dt-field:last-child {
+  flex: 1 1 6.5rem;
+}
+.dt-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  min-width: 0;
+}
+
+/* One bordered box holding the text field and its helper button. */
+.dt-group {
+  display: flex;
+  align-items: center;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-elevated);
+  min-width: 0;
+}
+.dt-group:focus-within {
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
+}
+.dt-group.is-invalid,
+.dt-tap.is-invalid {
+  border-color: var(--danger);
+}
+
+/* The faint format guide: a transparent copy of the draft plus the rest of
+   the template, drawn BEHIND a transparent input with identical metrics. */
+.dt-guided {
+  position: relative;
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.dt-input,
+.dt-ghost {
+  font: inherit;
+  font-size: 0.95rem;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: normal;
+  padding: 0.45rem 0.5rem;
+}
+.dt-input {
+  position: relative;
+  z-index: 1;
+  width: 100%;
+  min-width: 0;
+  border: none;
+  background: transparent;
+  color: var(--text);
+  outline: none;
+}
+.dt-ghost {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  white-space: pre;
+  overflow: hidden;
+  pointer-events: none;
+}
+.dt-ghost-typed {
+  color: transparent;
+}
+.dt-ghost-rest {
+  color: var(--text-muted);
+  opacity: 0.7;
+}
+.dt-weekday {
+  color: var(--text-muted);
+  font-size: 0.8rem;
+  padding-right: 0.15rem;
+  white-space: nowrap;
+}
+.dt-icon-btn {
+  flex: none;
+  width: 2.5rem;
+  align-self: stretch;
+  border: none;
+  border-left: 1px solid var(--border);
+  background: transparent;
+  color: var(--text);
+  font-size: 1rem;
+  cursor: pointer;
+  border-radius: 0 8px 8px 0;
+}
+.dt-icon-btn:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+.dt-live {
+  margin: 0;
+  font-size: 0.75rem;
+  color: var(--text-muted);
+}
+
+/* Mobile layout: the field is a tap target that opens the sheet or clock. */
+.dt-tap {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-height: 44px;
+  padding: 0 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-elevated);
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.dt-tap-value {
+  flex: 1 1 auto;
+  font-size: 1.05rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.dt-wall-notice {
+  margin: 0;
+}
+fieldset.dt-fold {
+  border: 1px solid var(--danger);
+  border-radius: 8px;
+  padding: 0.4rem 0.6rem 0.5rem;
+  font-size: 0.85rem;
+}
+.dt-fold legend {
+  padding: 0 0.25rem;
+}
+.dt-fold-option {
+  min-height: 2rem;
+}
+
+/* Overlays (calendar and clock) sit above the dialog AND the full-screen
+   sheet (z 60) and the header menu (z 70). */
+.dt-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+}
+.dt-overlay.is-sheet {
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.4);
+}
+/* The text mode raises a soft keyboard: sit at the top of what is visible. */
+.dt-overlay.is-sheet.is-text {
+  align-items: flex-start;
+}
+
+.dt-cal,
+.dt-clock {
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow);
+}
+.dt-cal.is-popover {
+  position: fixed;
+  width: 19rem;
+  border-radius: 10px;
+  padding: 0.5rem;
+}
+.dt-cal.is-sheet,
+.dt-clock {
+  width: 100%;
+  max-width: 30rem;
+  max-height: 100%;
+  overflow: auto;
+  border-radius: 14px 14px 0 0;
+  padding: 0.6rem 0.4rem max(0.6rem, env(safe-area-inset-bottom));
+}
+.dt-overlay.is-text .dt-cal.is-sheet,
+.dt-overlay.is-text .dt-clock {
+  border-radius: 0 0 14px 14px;
+  padding: 0.75rem;
+}
+.dt-sheet-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  padding: 0 0.4rem 0.4rem;
+}
+.dt-sheet-value {
+  font-size: 1.15rem;
+  font-variant-numeric: tabular-nums;
+}
+.dt-cal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.25rem;
+  margin-bottom: 0.25rem;
+}
+.dt-cal-title,
+.dt-cal-nav,
+.dt-cal-day,
+.dt-cal-pick {
+  font: inherit;
+  color: var(--text);
+  background: transparent;
+  border: 1px solid transparent;
+  cursor: pointer;
+}
+.dt-cal-title {
+  font-weight: 600;
+  min-height: 2.5rem;
+  padding: 0 0.6rem;
+  border-radius: 6px;
+}
+.dt-cal-nav {
+  width: 2.5rem;
+  height: 2.5rem;
+  font-size: 1.4rem;
+  border-radius: 50%;
+}
+.dt-cal-title:hover,
+.dt-cal-nav:hover,
+.dt-cal-day:hover,
+.dt-cal-pick:hover {
+  background: var(--bg-muted);
+}
+.dt-cal-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.dt-cal-row {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 2px;
+}
+.dt-cal-row > span {
+  display: flex;
+  justify-content: center;
+}
+.dt-cal-wd {
+  text-align: center;
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  padding: 0.25rem 0;
+}
+.dt-cal-day {
+  width: 2.35rem;
+  height: 2.35rem;
+  border-radius: 50%;
+  font-variant-numeric: tabular-nums;
+}
+.dt-cal-day.is-outside {
+  color: var(--text-muted);
+}
+.dt-cal-day.is-today {
+  border-color: var(--accent);
+}
+.dt-cal-day.is-selected,
+.dt-cal-pick.is-selected {
+  background: var(--accent);
+  color: var(--accent-contrast);
+  font-weight: 600;
+}
+.dt-cal-day:focus-visible,
+.dt-cal-pick:focus-visible,
+.dt-cal-title:focus-visible,
+.dt-cal-nav:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.dt-cal-picks {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 0.4rem;
+  padding: 0.5rem 0;
+}
+.dt-cal-pick {
+  min-height: 2.75rem;
+  border-radius: 22px;
+}
+/* The sheet: 44px targets, no gaps, so 320px still leaves ~44px-wide days. */
+.dt-cal.is-sheet .dt-cal-row,
+.dt-cal.is-sheet .dt-cal-grid {
+  gap: 0;
+}
+.dt-cal.is-sheet .dt-cal-day {
+  width: 100%;
+  max-width: 52px;
+  height: 44px;
+  border-radius: 22px;
+  font-size: 1.05rem;
+}
+.dt-cal.is-sheet .dt-cal-nav {
+  width: 44px;
+  height: 44px;
+}
+.dt-cal.is-sheet .dt-cal-title {
+  min-height: 44px;
+}
+.dt-cal-text {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+.dt-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin-top: 0.4rem;
+  flex-wrap: wrap;
+}
+.dt-actions .btn {
+  min-width: 44px;
+}
+.dt-overlay.is-sheet .dt-actions .btn {
+  min-height: 44px;
+}
+.dt-quiet {
+  border-color: transparent;
+  background: transparent;
+}
+.dt-spacer {
+  flex: 1;
+}
+
+/* The clock. On a wide screen (the desktop's helper) it is a centred dialog. */
+@media (min-width: 720px) {
+  .dt-clock-overlay {
+    align-items: center;
+  }
+  .dt-clock-overlay .dt-clock {
+    width: 21rem;
+    border-radius: 14px;
+    padding: 1rem;
+  }
+}
+.dt-clock-readout {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.25rem;
+  margin: 0.4rem 0 0.6rem;
+}
+.dt-clock-seg {
+  font: inherit;
+  font-size: 2.5rem;
+  line-height: 1;
+  min-width: 5rem;
+  padding: 0.35rem 0.6rem;
+  border: none;
+  border-radius: 8px;
+  background: var(--bg-muted);
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+}
+.dt-clock-seg.is-active {
+  background: var(--accent);
+  color: var(--accent-contrast);
+}
+.dt-clock-colon {
+  font-size: 2.1rem;
+}
+.dt-clock-face-wrap {
+  display: flex;
+  justify-content: center;
+}
+.dt-clock-face {
+  width: min(264px, calc(100vw - 48px));
+  height: auto;
+  touch-action: none;
+  user-select: none;
+  border-radius: 50%;
+  cursor: pointer;
+}
+.dt-clock-face:focus-visible {
+  outline: 3px solid var(--accent);
+  outline-offset: 2px;
+}
+.dt-clock-bg {
+  fill: var(--bg-muted);
+}
+.dt-clock-tick {
+  stroke: var(--text-muted);
+  stroke-width: 1.5;
+}
+.dt-clock-hand {
+  transform-box: view-box;
+  transform-origin: 128px 128px;
+  transition: transform 160ms ease-out;
+}
+.dt-clock-face.is-dragging .dt-clock-hand {
+  transition: none;
+}
+.dt-clock-hand line {
+  stroke: var(--accent);
+  stroke-width: 2;
+}
+.dt-clock-knob,
+.dt-clock-center {
+  fill: var(--accent);
+}
+.dt-clock-num {
+  text-anchor: middle;
+  dominant-baseline: central;
+  font-size: 15px;
+  fill: var(--text);
+  pointer-events: none;
+}
+.dt-clock-num.is-inner {
+  font-size: 12px;
+  fill: var(--text-muted);
+}
+.dt-clock-num.is-selected {
+  fill: var(--accent-contrast);
+  font-weight: 600;
+}
+.dt-clock-fine {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 0.75rem;
+  margin-top: 0.5rem;
+}
+.dt-clock-fine .btn {
+  min-width: 3.5rem;
+  min-height: 44px;
+}
+.dt-clock-text {
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  gap: 0.5rem;
+}
+.dt-clock-text input {
+  width: 5.5rem;
+  font-size: 2rem;
+  text-align: center;
+  min-height: 56px;
+}
+.dt-clock-text input[aria-invalid='true'] {
+  border-color: var(--danger);
+}
+@media (max-width: 360px) {
+  .dt-overlay.is-sheet .dt-actions {
+    gap: 2px;
+  }
+  .dt-overlay.is-sheet .dt-actions .btn {
+    padding-left: 0.5rem;
+    padding-right: 0.5rem;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .dt-clock-hand {
+    transition: none;
+  }
+}
+
+/* ---------- mobile header menu (P8-b5.5) ---------- */
+
+.header-menu {
+  position: relative;
+  flex: 0 0 auto;
+}
+
+.header-menu-trigger {
+  /* A square target for a single glyph. .btn.icon already sizes these; this
+     states the minimum again so the trigger cannot shrink below it when the
+     brand takes the rest of the row. */
+  min-width: 44px;
+  min-height: 44px;
+}
+
+.header-menu-panel {
+  position: absolute;
+  top: calc(100% + 6px);
+  /* Anchored to the RIGHT edge of the trigger, which is at the right edge of
+     the header: a panel anchored left would run off a 320px screen. */
+  right: 0;
+  z-index: 70;
+  min-width: 11rem;
+  /* Never wider than the screen, whatever a translated label says. The 16px
+     is the gutter the page keeps on both sides. */
+  max-width: calc(100vw - 16px);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-elevated);
+  box-shadow: 0 6px 20px rgb(0 0 0 / 35%);
+  overflow: hidden;
+}
+
+.header-menu-panel nav {
+  display: flex;
+  flex-direction: column;
+}
+
+.header-menu-item {
+  /* Full-width lines with real words -- the point of the exercise. A label
+     here has the whole panel to itself, so nothing wraps to two lines and
+     nothing is ellipsed to a single character. */
+  display: flex;
+  align-items: center;
+  min-height: 44px;
+  padding: 0 0.9rem;
+  border: 0;
+  background: none;
+  color: var(--fg);
+  font: inherit;
+  text-align: left;
+  text-decoration: none;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.header-menu-item + .header-menu-item {
+  border-top: 1px solid var(--border);
+}
+
+.header-menu-item:hover,
+.header-menu-item:focus-visible {
+  background: var(--bg-hover, rgb(255 255 255 / 8%));
+}
+
+@media (max-width: 719px) {
+  /*
+    THE BRAND GETS THE ROW, the controls get what they need.
+
+    It was being ellipsed to "Time..." because it shared a flex line with
+    four word-labelled buttons. With those behind one trigger there are two
+    fixed 44px squares on the right, and the brand has everything else -- so
+    it is allowed to stop shrinking and simply be read.
+  */
+  .app-header .brand {
+    flex: 1 1 auto;
+    min-width: 0;
+    white-space: nowrap;
+  }
+
+  .app-header-actions {
+    flex: 0 0 auto;
+    gap: 0.4rem;
+  }
+
+  /*
+    NO VERTICAL TEXT. This is the fault that started P8-b5.5: a .btn narrow
+    enough wraps its label between every character, and "ログアウト" became a
+    column of five. Buttons still in the mobile header carry single glyphs,
+    and this makes that structural rather than a thing that happens to be
+    true at the widths measured.
+  */
+  .app-header .btn {
+    white-space: nowrap;
+  }
 }

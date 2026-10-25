@@ -1,6 +1,8 @@
 import type { EventOccurrence } from '../../types/event';
-import { isoFromDateString } from '../../utils/datetime';
-import { EventChip } from './EventChip';
+import { useLanguage, useTranslate } from '../../i18n/useLanguage';
+import { intlLocale } from '../../i18n/resolveLanguage';
+import { dayKeyTitle } from './weekGrid';
+import { AgendaList } from './AgendaList';
 import type { DayAgenda } from './dayAgenda';
 
 interface Props {
@@ -14,8 +16,14 @@ interface Props {
  * Everything scheduled on one day, opened from a month cell's "+N".
  *
  * Deliberately thin: `buildDayAgenda` decides what belongs here and in what
- * order, and `EventChip` decides how one entry looks. This component only
- * arranges them and closes itself, so the list can be tested without a DOM.
+ * order, `AgendaList` draws them, and `EventChip` decides how one entry
+ * looks. This component contributes a heading, a close button and the modal
+ * around them.
+ *
+ * THE LIST MOVED OUT in P8-b2, when the phone needed the same one. Two copies
+ * of "everything on this day" would have been free to disagree about grouping,
+ * order, or what an empty day says -- and the two are meant to show the same
+ * thing for the same reason.
  *
  * The entries are the SAME occurrence objects the month grid was given, so
  * `onOccurrenceClick` is the existing edit handler with no adapter in between --
@@ -27,16 +35,15 @@ interface Props {
  * behaves like the two that already exist.
  */
 export function DayAgendaDialog({ agenda, onOccurrenceClick, onClose }: Props) {
-  const total = agenda.allDay.length + agenda.timed.length;
+  const tr = useTranslate();
+  const { language } = useLanguage();
 
-  // dayKey is a plain calendar date; render it through the local-midnight
-  // instant so the weekday is the one the grid showed.
-  const heading = new Date(isoFromDateString(agenda.dayKey)).toLocaleDateString(undefined, {
-    year: 'numeric',
-    month: 'long',
-    day: 'numeric',
-    weekday: 'short',
-  });
+  // The same words the day-view title uses, from the same helper, so the
+  // heading and the toolbar cannot disagree about a date. It used to inline
+  // `toLocaleDateString(undefined, ...)` -- a second copy of the option set
+  // and the last place in the app that read the browser's locale instead of
+  // the resolved language.
+  const heading = dayKeyTitle(agenda.dayKey, intlLocale(language));
 
   const open = (occ: EventOccurrence) => {
     onOccurrenceClick(occ);
@@ -48,43 +55,11 @@ export function DayAgendaDialog({ agenda, onOccurrenceClick, onClose }: Props) {
       <div className="modal" onClick={(e) => e.stopPropagation()} role="dialog" aria-modal="true">
         <h3 className="modal-title">{heading}</h3>
 
-        {total === 0 ? (
-          <p className="day-agenda-empty">この日の予定はありません。</p>
-        ) : (
-          <div className="day-agenda-list">
-            {agenda.allDay.length > 0 && (
-              <>
-                <p className="day-agenda-group">終日</p>
-                {agenda.allDay.map((occ) => (
-                  <EventChip
-                    key={`ad-${occ.event.id}-${occ.start}`}
-                    occurrence={occ}
-                    variant="chip"
-                    onClick={() => open(occ)}
-                  />
-                ))}
-              </>
-            )}
-
-            {agenda.timed.length > 0 && (
-              <>
-                <p className="day-agenda-group">時刻あり</p>
-                {agenda.timed.map((occ) => (
-                  <EventChip
-                    key={`t-${occ.event.id}-${occ.start}`}
-                    occurrence={occ}
-                    variant="chip"
-                    onClick={() => open(occ)}
-                  />
-                ))}
-              </>
-            )}
-          </div>
-        )}
+        <AgendaList agenda={agenda} onOccurrenceClick={open} />
 
         <div className="modal-actions">
           <span className="spacer" />
-          <button className="btn" onClick={onClose}>閉じる</button>
+          <button className="btn" onClick={onClose}>{tr('common.close')}</button>
         </div>
       </div>
     </div>

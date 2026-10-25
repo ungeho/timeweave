@@ -16,6 +16,8 @@
  */
 
 import type { AvailableResult, FreeBusySlot } from '../../types/share';
+import { t } from '../../i18n/t';
+import { DEFAULT_LANGUAGE, type Language } from '../../i18n/types';
 
 /** What the available section renders. */
 export type AvailablePresentation =
@@ -33,9 +35,17 @@ export type AvailablePresentation =
  * unexpandable recurrence is a detail of the owner's calendar), and it must not
  * soften into "no open time at the moment", which is the claim this state
  * exists to avoid making.
+ *
+ * A FUNCTION SINCE P6 STEP 2, for the reason its sibling in
+ * freeBusyPresentation gives: an anonymous viewer's language is their own
+ * browser's, so a sentence resolved at import time is certain to be the wrong
+ * language for some reader. The safety requirement is unchanged and now has to
+ * hold in both languages -- that this sentence reports MISSING KNOWLEDGE and
+ * never an empty calendar -- which is what the English guards assert.
  */
-export const AVAILABLE_INDETERMINATE_MESSAGE =
-  '空き時間を正確に判定できませんでした。この期間については、空いているかどうかを確認するには直接ご連絡ください。';
+export function availableIndeterminateMessage(lang: Language = DEFAULT_LANGUAGE): string {
+  return t('share.available.indeterminate', lang);
+}
 
 /**
  * An exact computation that disclosed no available time.
@@ -44,7 +54,9 @@ export const AVAILABLE_INDETERMINATE_MESSAGE =
  * exact. It still says "shared", not "has": the owner may have open time they
  * simply did not mark as available, and this page has no way to tell.
  */
-export const AVAILABLE_EMPTY_MESSAGE = 'この期間に共有されている空き時間はありません。';
+export function availableEmptyMessage(lang: Language = DEFAULT_LANGUAGE): string {
+  return t('share.available.empty', lang);
+}
 
 /**
  * Pick the presentation for one `available` result.

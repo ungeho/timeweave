@@ -28,6 +28,9 @@
  * rule that lives here is a rule that can be tested.
  */
 
+import { t } from '../../i18n/t';
+import { DEFAULT_LANGUAGE, type Language } from '../../i18n/types';
+
 /** The product limit, in UTF-16 code units. The only place this number lives. */
 export const SHARE_LABEL_MAX = 50;
 
@@ -51,10 +54,37 @@ export function shareLabelLength(label: string | null | undefined): number {
  * Neither trims in place nor truncates -- an over-long label is refused and
  * returned to the user intact, never silently shortened into a different label
  * than the one they typed.
+ *
+ * `lang` DEFAULTS TO THE DEFAULT LANGUAGE, exactly as contentLengthError's
+ * does. Both are refusals rendered by a dialog, both carry their ceiling as a
+ * variable so the sentence cannot drift from the constant, and both are called
+ * today with the argument omitted -- so the screen does not move. P6 adds the
+ * language to this call and to EventDialog's in the same change, which is why
+ * the two have the same shape rather than one of them reading a context.
  */
-export function labelLengthError(label: string | null | undefined): string | null {
+export function labelLengthError(
+  label: string | null | undefined,
+  lang: Language = DEFAULT_LANGUAGE,
+): string | null {
   if (shareLabelLength(label) > SHARE_LABEL_MAX) {
-    return `ラベルは${SHARE_LABEL_MAX}文字以内で入力してください`;
+    return labelTooLongMessage(SHARE_LABEL_MAX, lang);
   }
   return null;
+}
+
+/**
+ * The refusal sentence on its own, given the ceiling it should quote.
+ *
+ * Extracted in P6 step 6 so the key lives in exactly one place. ShareDialog no
+ * longer stores the sentence `labelLengthError` returns -- it keeps the FACT
+ * that the label was too long, plus `max`, and renders it here in whatever
+ * language the owner is reading. Without this function the dialog would have
+ * had to repeat `t('share.label.tooLong', lang, { max })` itself, and the one
+ * place this number lives would have become two.
+ *
+ * `max` is a parameter rather than read from the constant so the sentence
+ * cannot disagree with the number the caller actually enforced.
+ */
+export function labelTooLongMessage(max: number, lang: Language = DEFAULT_LANGUAGE): string {
+  return t('share.label.tooLong', lang, { max });
 }

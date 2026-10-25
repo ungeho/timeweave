@@ -371,7 +371,15 @@ res as (
          from gfb g, lateral pg_catalog.aclexplode(g.proacl) a)),
     ('W06','wrapper','MANUAL: body md5 -- MUST equal stage 3 W06', null::text,
       (select h from gfb)),
-    ('W07','wrapper','calls free_busy_core exactly once','1',
+    -- 0024 SUPERSEDED THE EXPECTED COUNT, NOT THE METRIC. The wrapper now holds
+    -- TWO syntactic call sites because share_available=false and =true are
+    -- mutually exclusive branches, so exactly one of them runs and there is
+    -- still one core invocation per active execution path. This gate counts
+    -- occurrences in the source and cannot see which branch ran: 0024_postflight
+    -- W08/W08b pin the two sites and the single branch guard, and the 0024
+    -- runtime suite is what proves the runtime behaviour. The regexp and the
+    -- counting mechanism are unchanged -- a third call site still fails here.
+    ('W07','wrapper','free_busy_core call sites (2 mutually exclusive branches)','2',
       (select count(*) from regexp_matches((select body from gfb),
         'timeweave_private\.free_busy_core\(','g'))::text),
     ('W08','limits','the five 0019 parameter functions exist','5',

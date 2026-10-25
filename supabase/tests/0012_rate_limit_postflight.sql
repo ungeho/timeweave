@@ -95,7 +95,22 @@ trg as (
 ev as (
   select (select count(*) from trg)                                           as all_triggers,
          (select string_agg(nm, ', ' order by nm) from trg)                    as names,
-         (select count(*) from trg where nm like 'events_quota_%')             as quota_triggers,
+         -- ord 41 NARROWED from `nm like 'events_quota_%'` to these four exact
+         -- names. 0017 added events_quota_graph_ai and events_quota_graph_au,
+         -- which also match that pattern, so the old aggregate returned 6 and
+         -- stopped measuring what ord 41's name claims. The four below are
+         -- 0011's quota triggers, and only 0011's.
+         --
+         -- This follows 0011_content_quota_postflight.sql ord 14, which listed
+         -- the same four by name from the start -- and is precisely why that
+         -- file survived 0017 while this count did not.
+         --
+         -- `order_holds` below deliberately KEEPS the broad pattern: ord 42
+         -- checks lock ordering for EVERY quota trigger, 0017's two included.
+         (select count(*) from trg
+           where nm in ('events_quota_owner_ai','events_quota_owner_au',
+                        'events_quota_exception_ai','events_quota_exception_au'))
+                                                                               as quota_triggers,
          (select count(*) from trg where nm like 'events_rate_%')              as rate_triggers,
          (select coalesce(bool_and(nm < 'events_rate_ai'), false)
             from trg where nm like 'events_quota_%')                          as order_holds,
@@ -221,9 +236,21 @@ from (
          (select (bool_or((tgtype & 8) <> 0 or (tgtype & 32) <> 0))::text
             from trg where nm like 'events_rate_%'), 'false'
   -- 4x  public.events is otherwise untouched ----------------------------------
+  --
+  -- ord 40 EXPECTATION UPDATED 8 -> 10. Migration 0017 added two triggers to
+  -- public.events after this file was written:
+  --     events_quota_graph_ai
+  --     events_quota_graph_au
+  -- The COUNTING METHOD IS UNCHANGED -- count(*) over every non-internal
+  -- trigger on the table. Only the expected inventory moved.
+  --
+  -- This row asserts the EXACT current inventory, so a future migration that
+  -- adds or removes a trigger on public.events WILL fail it and will have to
+  -- revisit this literal. That is the row's purpose, not a defect: it exists to
+  -- notice a trigger nobody expected. ord 43 prints the names alongside it.
   union all
-  select 40, 'public.events now carries eight triggers',
-         (select all_triggers::text from ev), '8'
+  select 40, 'public.events now carries ten triggers',
+         (select all_triggers::text from ev), '10'
   union all
   select 41, 'the four 0011 quota triggers are still there',
          (select quota_triggers::text from ev), '4'
@@ -282,7 +309,26 @@ rollback;
 --     exposed schemas, which no migration can undo.
 --
 -- M2  A refusal must reach the client as an HTTP 429 carrying the token.
---     DEFERRED: no procedure is published here yet, on purpose.
+--     PROCEDURE: supabase/tests/0012_m2_rest_429_check.sql.
+--     NOT YET PERFORMED on production -- the result is recorded in that file.
+--
+--     It pre-seeds `tat` for ONE dedicated test account so that account's very
+--     next write is over the line, and meets each requirement a replacement for
+--     the rejected method below had to meet:
+--       * confined to one test account, nothing global. The parameter functions
+--         are never redefined; the procedure asserts 1 s / 120 before the seed,
+--         inside it, and in the readout;
+--       * reversible by construction. The account must have NO state row when
+--         M2 starts -- a precondition, never met by overwriting or deleting a
+--         row that was already there -- and the seed is a plain INSERT with no
+--         ON CONFLICT. Cleanup deletes the one row the seed created, so the
+--         account ends exactly as it began. An operator who stops half way
+--         leaves only that account refused, for at most 300 s, after which it
+--         recovers arithmetically;
+--       * the real PostgREST path, from a real user JWT, with the app's own
+--         request shape;
+--       * no event rows left behind. A refused write leaves neither a row nor a
+--         charge, and the readout asserts both against the seeded row.
 --
 --     REJECTED METHOD -- do not use it. An earlier draft of this file suggested
 --     lowering the burst globally for a moment:
@@ -301,19 +347,7 @@ rollback;
 --         skipped or fails the product is left throttled at one write;
 --       * it writes a real event row that then has to be cleaned up by hand.
 --
---     WHAT A REPLACEMENT MUST SATISFY (to be designed separately, before this
---     check is performed):
---       * confined to ONE test account -- nothing global, no parameter change;
---       * reversible by construction, and unable to leave the product throttled
---         if the operator stops half way;
---       * still exercising the real PostgREST path, since that is the only thing
---         this check is about;
---       * leaving no event rows behind.
---     The obvious direction is to pre-seed that one account's `tat` in the state
---     table so the very next write is over the line; it is not written up here
---     because it has not been designed or rehearsed yet.
---
---     Until then, what IS already measured about this path: a probe carrying
+--     Before M2, what IS already measured about this path: a probe carrying
 --     this exact trigger shape refused 80 of 100 concurrent REST writes with
 --     HTTP 429, code PT429, details TIMEWEAVE_RATE_EVENTS and a parseable
 --     retry_after_seconds hint, and 0012_rate_limit_test.sql pins the same

@@ -14,19 +14,52 @@ import type {
   TimezoneIntent,
 } from '../types/event';
 import { getEventRepository } from '../repositories/eventRepository';
-import { expandEvents } from '../services/occurrences';
+import { expandEvents, unexpandableMasters } from '../services/occurrences';
 import {
   editOccurrence as editOccurrenceOp,
   deleteOccurrence as deleteOccurrenceOp,
   setSeriesTimezone as setSeriesTimezoneOp,
 } from '../services/recurrenceOps';
 
+/**
+ * A failed load, holding the CAUSE rather than a sentence.
+ *
+ * A TAGGED OBJECT, NOT A BARE `unknown`. The consumer's failure test is
+ * `events.error !== null`, and `unknown` includes null and undefined -- so a
+ * `throw null` (or a rejected promise with no reason) would have set the state
+ * to a value indistinguishable from "no error", and the banner would silently
+ * not appear for a load that genuinely failed. The wrapper means the FACT of
+ * the failure is carried by the object's existence and the cause is just a
+ * field, which can hold anything at all.
+ *
+ * The cause is not rendered here. `features/calendar/loadErrorText` turns it
+ * into words, at the moment the banner is drawn, in the language the owner is
+ * reading -- which is the whole point of keeping it.
+ */
+export interface EventsLoadError {
+  readonly kind: 'error';
+  /** Whatever the promise rejected with: an Error, a string, anything. */
+  readonly cause: unknown;
+}
+
 export interface UseEvents {
   loading: boolean;
-  error: string | null;
+  /**
+   * The failed load, or null. WAS `string | null`, resolved at the moment of
+   * failure -- which pinned the wording to the language that happened to be
+   * current when the fetch rejected, so a later language change re-rendered
+   * every other string on screen and left this one in Japanese.
+   */
+  error: EventsLoadError | null;
   rows: EventRow[];
   /** Occurrences expanded for [rangeStartIso, rangeEndIso). */
   occurrencesIn: (rangeStartIso: string, rangeEndIso: string) => EventOccurrence[];
+  /**
+   * Recurring masters whose rule this client cannot expand (K12). occurrencesIn
+   * leaves each such series out instead of failing; the calendar says so.
+   * Independent of the range on screen.
+   */
+  unexpandableSeries: EventRow[];
   create: (input: NewEvent) => Promise<void>;
   update: (id: string, patch: Partial<EventRow>) => Promise<void>;
   remove: (id: string) => Promise<void>;
@@ -64,7 +97,7 @@ export function useEvents(): UseEvents {
   const repo = useMemo(() => getEventRepository(), []);
   const [rows, setRows] = useState<EventRow[]>([]);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<EventsLoadError | null>(null);
 
   const reload = useCallback(async () => {
     setLoading(true);
@@ -72,7 +105,10 @@ export function useEvents(): UseEvents {
     try {
       setRows(await repo.list());
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      // The cause, untouched. Nothing here decides what it says -- this hook
+      // imports no dictionary and knows no language, which is also why a
+      // language change can never reach `reload` and re-run the fetch.
+      setError({ kind: 'error', cause: e });
     } finally {
       setLoading(false);
     }
@@ -141,11 +177,14 @@ export function useEvents(): UseEvents {
     [rows],
   );
 
+  const unexpandableSeries = useMemo(() => unexpandableMasters(rows), [rows]);
+
   return {
     loading,
     error,
     rows,
     occurrencesIn,
+    unexpandableSeries,
     create,
     update,
     remove,

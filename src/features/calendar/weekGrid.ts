@@ -83,12 +83,50 @@ export function weekTitle(anchor: Date, timeZone: string, locale?: string): stri
   return `${formatDayKey(monday, fmt, locale)} – ${formatDayKey(sunday, fmt, locale)}`;
 }
 
+/** The option set shared by the day-view title and the day-agenda heading. */
+const FULL_DAY: Intl.DateTimeFormatOptions = {
+  year: 'numeric',
+  month: 'long',
+  day: 'numeric',
+  weekday: 'short',
+};
+
 /** Title for the day view, e.g. "2026年8月29日(土)". */
 export function dayTitle(anchor: Date, timeZone: string, locale?: string): string {
-  const dayKey = zonedDayKey(anchor.toISOString(), timeZone);
-  return formatDayKey(
-    dayKey,
-    { year: 'numeric', month: 'long', day: 'numeric', weekday: 'short' },
-    locale,
-  );
+  return formatDayKey(zonedDayKey(anchor.toISOString(), timeZone), FULL_DAY, locale);
+}
+
+/**
+ * A calendar DATE formatted with its weekday, e.g. "2026年8月29日(土)".
+ *
+ * The same words `dayTitle` produces, but taken from a day key rather than an
+ * instant plus a zone -- which is what the day-agenda dialog holds. It used to
+ * build this inline with `toLocaleDateString(undefined, ...)`: the same option
+ * set written a second time, and the only place left in the app that reached
+ * for the browser's locale instead of the resolved language.
+ *
+ * Going through `formatDayKey` also drops a fragility. The dialog converted
+ * the day key to LOCAL midnight and formatted in the runtime's zone; correct,
+ * but one zone argument away from showing the previous day. `formatDayKey`
+ * uses UTC noon with `timeZone: 'UTC'`, so no conversion can move the date.
+ * The rendered string is identical either way, which dateLocale.test.ts pins.
+ */
+export function dayKeyTitle(dayKey: string, locale?: string): string {
+  return formatDayKey(dayKey, FULL_DAY, locale);
+}
+
+/**
+ * Just the weekday from a day key, e.g. "月" or "Mon".
+ *
+ * For the mobile date strip and the compact month, whose cells are too narrow
+ * for a full date. It goes through `formatDayKey` for the reason the comment
+ * above gives: UTC noon formatted in UTC, so no zone conversion can move the
+ * date and hand back the wrong weekday.
+ */
+export function dayKeyWeekday(
+  dayKey: string,
+  locale?: string,
+  width: "short" | "narrow" = "short",
+): string {
+  return formatDayKey(dayKey, { weekday: width }, locale);
 }

@@ -113,14 +113,12 @@ export async function setSeriesTimezone(
 ): Promise<void> {
   const master = requireRow(rows, masterId);
   if (!isTimedMaster(master)) {
-    throw new InvalidTimezoneError('タイムゾーンを持てるのは時刻ありの繰り返し予定だけです');
+    throw InvalidTimezoneError.timedRecurrenceOnly();
   }
   if (master.timezone === timezone) return;
   if (!isStorableTimeZone(timezone)) throw new InvalidTimezoneError();
   if (seriesHasExceptions(masterId, rows)) {
-    throw new SeriesEditBlockedError(
-      '個別に変更した回があるため、繰り返しのタイムゾーンは変更できません',
-    );
+    throw SeriesEditBlockedError.timezoneChange();
   }
   await repo.update(masterId, { timezone });
 }

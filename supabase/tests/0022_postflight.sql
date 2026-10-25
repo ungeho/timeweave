@@ -242,7 +242,34 @@ res as (
       (select count(*) from regexp_matches((select body from cor),'share_available','g'))::text),
     ('B03','boundary','GATE: exactly one get_free_busy overload','1',
       (select count(*) from fn where nsp='public' and proname='get_free_busy')::text),
-    ('B04','boundary','GATE: wrapper body does not mention share_available or link_state','0',
+    -- B04 IS RETIRED AS A GATE, AND DELIBERATELY NOT DELETED.
+    --
+    -- What it protected: that 0022 confined itself to the OWNER-facing surface
+    -- and did not touch the anonymous wrapper at all. For 0022's own apply that
+    -- was true and worth refusing a violation over.
+    --
+    -- Why it can no longer be a gate: the invariant itself was superseded by two
+    -- later accepted migrations, not merely re-expressed. 0023 made the wrapper
+    -- emit link_state, and 0024 made it read share_available to decide whether
+    -- to compute Available. The wrapper is now REQUIRED to mention both, so an
+    -- expectation of 0 asserts the opposite of the accepted design.
+    --
+    -- What now covers the safety property instead:
+    --   B02 (below, unchanged)      the CORE still never mentions share_available
+    --                               -- the deeper half of B04's protection, and
+    --                               the half 0023/0024 did not supersede
+    --   0024_postflight W08/W08b    the exact two core call sites and the single
+    --                               share_available branch guard in the wrapper
+    --   0024_postflight A06/A12     the helper references neither the core nor
+    --                               share_available
+    --   0024_available_test         the active result's exact key set, so the
+    --                               column cannot leak into the wire answer
+    --   0023_postflight W10-W12     link_state's introduction
+    --
+    -- Kept as a CONTEXT row (null::text expected) so the measurement stays
+    -- visible to a reader and cannot fail. Post-0024 it reads non-zero by design.
+    ('B04','boundary','RETIRED/CONTEXT: wrapper mentions of share_available|link_state '
+                      '-- 0 for 0022, non-zero from 0023/0024 onward BY DESIGN', null::text,
       (select count(*) from regexp_matches((select body from gfb),
         '(share_available|link_state)','g'))::text),
     ('B05','boundary','GATE: anon still has get_free_busy and nothing on share_links','true|false|false|false',

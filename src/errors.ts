@@ -6,7 +6,112 @@
  * DuplicateExceptionError, a hook/guard raises SeriesEditBlockedError, the
  * timezone trio comes from either the database mapping or its TypeScript twin,
  * and the UI catches all of them — so they live in one shared module.
+ *
+ * CODE AND WORDING ARE SEPARATE (i18n P3). Each class carries a stable `code`
+ * and the `messageKey` its wording lives under, and builds its default
+ * `message` by rendering that key in Japanese. Three things are deliberately
+ * unchanged by that:
+ *
+ *   `instanceof`  still how every call site identifies an error. The survey
+ *                 before this change found exactly one such check outside
+ *                 tests (freeBusyBanner) and none on `.name` or on the message
+ *                 text, so no call site had to be rewritten.
+ *   `.message`    still returns the same Japanese sentence, byte for byte, so
+ *                 all ten `e instanceof Error ? e.message : String(e)` sites
+ *                 keep working and the screen does not move.
+ *   an explicit `message` argument still wins where a constructor took one.
+ *
+ * What the key BUYS is that P6 can render `t(err.messageKey, lang, …)` rather
+ * than reading `.message`, without touching these classes again. `code` is for
+ * anything that must name an error without caring how it reads.
  */
+
+import { t } from './i18n/t';
+import { ja as jaDict, type MessageKey } from './i18n/ja';
+import { DEFAULT_LANGUAGE, type ExtractVars, type Language } from './i18n/types';
+
+/** Stable identifiers, independent of wording and of language. */
+export type ErrorCode =
+  | 'DUPLICATE_EXCEPTION'
+  | 'SERIES_EDIT_BLOCKED'
+  | 'WRITE_RATE_LIMITED'
+  | 'FREEBUSY_RATE_LIMITED'
+  | 'SHARE_LINK_RATE_LIMITED'
+  | 'SHARE_LINK_ACTIVE_QUOTA'
+  | 'SHARE_LINK_TOTAL_QUOTA'
+  | 'RECURRENCE_GRAPH'
+  | 'EVENT_QUOTA'
+  | 'EXCEPTION_QUOTA'
+  | 'INVALID_TIMEZONE'
+  | 'TIMEZONE_REQUIRED'
+  | 'TIMEZONE_CLEARED'
+  /**
+   * The recurrence FORM's three validation refusals (P6 step 4).
+   *
+   * The code is registered here, with the others, because this union is the
+   * registry of everything that can identify an error -- but the class itself
+   * lives beside formToRule in features/event/recurrenceForm.ts. That is this
+   * module's own rule, stated at the top: errors that cross layers live here,
+   * errors with a single owner stay with it. formToRule is thrown from and
+   * caught within features/event, so it is the second kind. Satisfying
+   * `DomainError` is what makes the distinction free -- isDomainError and
+   * localize() work on it exactly as they do on the classes below.
+   */
+  | 'RECURRENCE_FORM';
+
+/**
+ * What every domain error here exposes beyond `Error`.
+ *
+ * Declared as an interface the classes satisfy rather than a base class, so
+ * `instanceof` keeps naming the specific error and a narrowing helper can ask
+ * about the shape without a new inheritance level.
+ */
+export interface DomainError extends Error {
+  readonly code: ErrorCode;
+  readonly messageKey: MessageKey;
+  /**
+   * True when the thrower supplied its own wording.
+   *
+   * Three production call sites do (recurrenceOps twice, eventRepository
+   * once), and an arbitrary string cannot be translated -- so `localize`
+   * returns it unchanged rather than silently replacing it with the generic
+   * sentence for the code.
+   */
+  readonly hasCustomMessage: boolean;
+  /**
+   * The message in any language. `.message` is exactly this in Japanese.
+   *
+   * THIS IS WHAT P6 CALLS. `t(err.messageKey, lang)` cannot be the display
+   * path: the rate-limited keys need an {advice} variable the caller would
+   * have to know to supply, FreeBusy's key is typed as the whole union so the
+   * compiler cannot check it, and a custom message would be thrown away.
+   * Each class knows all three answers about itself; the display site should
+   * not have to.
+   */
+  localize(lang: Language): string;
+}
+
+/** Whether a caught value is one of this module's errors. */
+export function isDomainError(e: unknown): e is DomainError {
+  return e instanceof Error && typeof (e as Partial<DomainError>).code === 'string';
+}
+
+/**
+ * The keys that take no variables.
+ *
+ * Narrowing the helper below to these is not tidiness: `t` demands exactly the
+ * variables a key declares, and a helper typed over the whole key union would
+ * have to demand the widest set from every caller. Restricting the input makes
+ * the zero-argument call correct AND stops anyone passing a key like
+ * `error.writeRateLimited`, whose `{advice}` would otherwise reach the screen
+ * unfilled.
+ */
+type KeyWithoutVars = {
+  [K in MessageKey]: [ExtractVars<(typeof jaDict)[K]>] extends [never] ? K : never;
+}[MessageKey];
+
+/** Render a variable-free key in Japanese -- the wording `.message` always had. */
+const ja = (key: KeyWithoutVars): string => t(key, DEFAULT_LANGUAGE);
 
 /**
  * Thrown when creating an exception row would collide with an existing exception
@@ -14,9 +119,19 @@
  * The occurrence already has an override/cancellation.
  */
 export class DuplicateExceptionError extends Error {
-  constructor(message = 'この繰り返し予定の回には、すでに個別の変更が存在します') {
-    super(message);
+  readonly code = 'DUPLICATE_EXCEPTION' as const;
+  readonly messageKey = 'error.duplicateException' as const;
+
+  readonly hasCustomMessage: boolean;
+
+  constructor(message?: string) {
+    super(message ?? ja('error.duplicateException'));
     this.name = 'DuplicateExceptionError';
+    this.hasCustomMessage = message !== undefined;
+  }
+
+  localize(lang: Language): string {
+    return this.hasCustomMessage ? this.message : t('error.duplicateException', lang);
   }
 }
 
@@ -26,10 +141,56 @@ export class DuplicateExceptionError extends Error {
  * the whole series would silently leave those exceptions stale, so it is blocked.
  * "Delete all", and "this occurrence only", remain allowed.
  */
+export type SeriesEditBlockedReason = 'editAll' | 'timezoneChange';
+
 export class SeriesEditBlockedError extends Error {
-  constructor(message = '個別に変更した回があるため、繰り返し全体の変更はできません') {
-    super(message);
+  readonly code = 'SERIES_EDIT_BLOCKED' as const;
+  readonly reason: SeriesEditBlockedReason;
+  /**
+   * Follows `reason`, not the class: changing the whole series and changing
+   * only its zone read differently, and the zone one used to be passed in as
+   * a Japanese string. `code` stays single, because for everything that
+   * IDENTIFIES errors these are one refusal with two wordings -- the same
+   * arrangement FreeBusyRateLimitedError's two kinds use.
+   */
+  readonly messageKey: MessageKey;
+
+  readonly hasCustomMessage: boolean;
+
+  constructor(message?: string, reason: SeriesEditBlockedReason = 'editAll') {
+    super(
+      message ??
+        (reason === 'timezoneChange'
+          ? ja('error.seriesTimezoneBlocked')
+          : ja('error.seriesEditBlocked')),
+    );
     this.name = 'SeriesEditBlockedError';
+    this.reason = reason;
+    this.messageKey =
+      reason === 'timezoneChange' ? 'error.seriesTimezoneBlocked' : 'error.seriesEditBlocked';
+    this.hasCustomMessage = message !== undefined;
+  }
+
+  /**
+   * The series' ZONE cannot move because occurrences were changed one by one.
+   *
+   * A named constructor rather than a second positional argument, so the call
+   * site reads as the rule it is enforcing and `message` keeps its place as
+   * the first parameter -- every existing `new SeriesEditBlockedError(...)`
+   * means exactly what it did before.
+   */
+  static timezoneChange(): SeriesEditBlockedError {
+    return new SeriesEditBlockedError(undefined, 'timezoneChange');
+  }
+
+  localize(lang: Language): string {
+    // The key is re-derived from `reason` rather than read from
+    // `this.messageKey`, which is typed as the whole union and so cannot tell
+    // `t` which variables it needs. Deriving it keeps the call literal.
+    if (this.hasCustomMessage) return this.message;
+    return this.reason === 'timezoneChange'
+      ? t('error.seriesTimezoneBlocked', lang)
+      : t('error.seriesEditBlocked', lang);
   }
 }
 
@@ -42,12 +203,13 @@ export class SeriesEditBlockedError extends Error {
  * already turns a 0 into null. The guard stays here because the constructor is
  * public, and "約0秒後にお試しください" would read as a bug rather than as guidance.
  */
-function retryAdvice(seconds: number | null): string {
+export function retryAdvice(seconds: number | null, lang = DEFAULT_LANGUAGE): string {
   if (seconds === null || seconds <= 0) {
-    return 'しばらく待ってからもう一度お試しください';
+    return t('error.retry.wait', lang);
   }
-  const label = seconds < 60 ? `${seconds}秒` : `${Math.ceil(seconds / 60)}分`;
-  return `約${label}後にもう一度お試しください`;
+  return seconds < 60
+    ? t('error.retry.seconds', lang, { seconds })
+    : t('error.retry.minutes', lang, { minutes: Math.ceil(seconds / 60) });
 }
 
 /**
@@ -69,15 +231,23 @@ function retryAdvice(seconds: number | null): string {
  * to stop a client from writing as fast as it can.
  */
 export class WriteRateLimitedError extends Error {
+  readonly code = 'WRITE_RATE_LIMITED' as const;
+  readonly messageKey = 'error.writeRateLimited' as const;
   readonly retryAfterSeconds: number | null;
 
+  readonly hasCustomMessage: boolean;
+
   constructor(retryAfterSeconds: number | null = null, message?: string) {
-    super(
-      message ??
-        `保存が短時間に集中したため、一時的に制限しています。${retryAdvice(retryAfterSeconds)}`,
-    );
+    super(message ?? t('error.writeRateLimited', DEFAULT_LANGUAGE, { advice: retryAdvice(retryAfterSeconds) }));
     this.name = 'WriteRateLimitedError';
     this.retryAfterSeconds = retryAfterSeconds;
+    this.hasCustomMessage = message !== undefined;
+  }
+
+  localize(lang: Language): string {
+    return this.hasCustomMessage
+      ? this.message
+      : t('error.writeRateLimited', lang, { advice: retryAdvice(this.retryAfterSeconds, lang) });
   }
 }
 
@@ -117,23 +287,42 @@ export class WriteRateLimitedError extends Error {
  * 'busy' it would spend the slot the running computations need to finish.
  */
 export class FreeBusyRateLimitedError extends Error {
+  readonly code = 'FREEBUSY_RATE_LIMITED' as const;
   readonly kind: 'rate' | 'busy';
   readonly retryAfterSeconds: number | null;
+  /**
+   * The two kinds read differently, so the key follows `kind` rather than the
+   * class. `code` stays single, because for everything that identifies errors
+   * these remain one failure with two wordings -- which is also why 0019
+   * raises both with the same DETAIL marker.
+   */
+  readonly messageKey: MessageKey;
+  readonly hasCustomMessage: boolean;
 
   constructor(
     kind: 'rate' | 'busy',
     retryAfterSeconds: number | null = null,
     message?: string,
   ) {
-    super(
-      message ??
-        (kind === 'busy'
-          ? `空き時間の計算が混み合っています。${retryAdvice(retryAfterSeconds)}`
-          : `空き時間の取得が短時間に集中したため、一時的に制限しています。${retryAdvice(retryAfterSeconds)}`),
-    );
+    const key: MessageKey =
+      kind === 'busy' ? 'error.freeBusyBusy' : 'error.freeBusyRateLimited';
+    super(message ?? t(key, DEFAULT_LANGUAGE, { advice: retryAdvice(retryAfterSeconds) }));
+    this.messageKey = key;
     this.name = 'FreeBusyRateLimitedError';
+    this.hasCustomMessage = message !== undefined;
     this.kind = kind;
     this.retryAfterSeconds = retryAfterSeconds;
+  }
+
+  localize(lang: Language): string {
+    // The key is re-derived from `kind` rather than read from `this.messageKey`,
+    // which is typed as the whole MessageKey union and so cannot tell `t` which
+    // variables it needs. Deriving it here keeps the call literal and checked.
+    return this.hasCustomMessage
+      ? this.message
+      : this.kind === 'busy'
+        ? t('error.freeBusyBusy', lang, { advice: retryAdvice(this.retryAfterSeconds, lang) })
+        : t('error.freeBusyRateLimited', lang, { advice: retryAdvice(this.retryAfterSeconds, lang) });
   }
 }
 
@@ -153,15 +342,23 @@ export class FreeBusyRateLimitedError extends Error {
  * on their behalf only hammers the same wall.
  */
 export class ShareLinkRateLimitedError extends Error {
+  readonly code = 'SHARE_LINK_RATE_LIMITED' as const;
+  readonly messageKey = 'error.shareLinkRateLimited' as const;
   readonly retryAfterSeconds: number | null;
 
+  readonly hasCustomMessage: boolean;
+
   constructor(retryAfterSeconds: number | null = null, message?: string) {
-    super(
-      message ??
-        `共有リンクの作成が短時間に集中したため、一時的に制限しています。${retryAdvice(retryAfterSeconds)}`,
-    );
+    super(message ?? t('error.shareLinkRateLimited', DEFAULT_LANGUAGE, { advice: retryAdvice(retryAfterSeconds) }));
     this.name = 'ShareLinkRateLimitedError';
     this.retryAfterSeconds = retryAfterSeconds;
+    this.hasCustomMessage = message !== undefined;
+  }
+
+  localize(lang: Language): string {
+    return this.hasCustomMessage
+      ? this.message
+      : t('error.shareLinkRateLimited', lang, { advice: retryAdvice(this.retryAfterSeconds, lang) });
   }
 }
 
@@ -178,9 +375,19 @@ export class ShareLinkRateLimitedError extends Error {
  * create a second copy that can drift.
  */
 export class ShareLinkActiveQuotaExceededError extends Error {
-  constructor(message = '有効な共有リンクの数が上限に達しました。不要なリンクを失効させてから、もう一度お試しください') {
-    super(message);
+  readonly code = 'SHARE_LINK_ACTIVE_QUOTA' as const;
+  readonly messageKey = 'error.shareLinkActiveQuota' as const;
+
+  readonly hasCustomMessage: boolean;
+
+  constructor(message?: string) {
+    super(message ?? ja('error.shareLinkActiveQuota'));
     this.name = 'ShareLinkActiveQuotaExceededError';
+    this.hasCustomMessage = message !== undefined;
+  }
+
+  localize(lang: Language): string {
+    return this.hasCustomMessage ? this.message : t('error.shareLinkActiveQuota', lang);
   }
 }
 
@@ -203,9 +410,19 @@ export class ShareLinkActiveQuotaExceededError extends Error {
  * (share_links_max_total_per_owner()), and a copy here could drift.
  */
 export class ShareLinkTotalQuotaExceededError extends Error {
-  constructor(message = '共有リンクの総数が上限に達しました。失効済みのリンクを削除すると枠が空きます（失効させるだけでは総数は減りません）。失効済みがなければ、不要なリンクを先に失効させてください') {
-    super(message);
+  readonly code = 'SHARE_LINK_TOTAL_QUOTA' as const;
+  readonly messageKey = 'error.shareLinkTotalQuota' as const;
+
+  readonly hasCustomMessage: boolean;
+
+  constructor(message?: string) {
+    super(message ?? ja('error.shareLinkTotalQuota'));
     this.name = 'ShareLinkTotalQuotaExceededError';
+    this.hasCustomMessage = message !== undefined;
+  }
+
+  localize(lang: Language): string {
+    return this.hasCustomMessage ? this.message : t('error.shareLinkTotalQuota', lang);
   }
 }
 
@@ -222,9 +439,19 @@ export class ShareLinkTotalQuotaExceededError extends Error {
  * internals without giving the user anything to act on.
  */
 export class RecurrenceGraphViolationError extends Error {
-  constructor(message = '予定を保存できませんでした。操作をやり直してください。') {
-    super(message);
+  readonly code = 'RECURRENCE_GRAPH' as const;
+  readonly messageKey = 'error.recurrenceGraph' as const;
+
+  readonly hasCustomMessage: boolean;
+
+  constructor(message?: string) {
+    super(message ?? ja('error.recurrenceGraph'));
     this.name = 'RecurrenceGraphViolationError';
+    this.hasCustomMessage = message !== undefined;
+  }
+
+  localize(lang: Language): string {
+    return this.hasCustomMessage ? this.message : t('error.recurrenceGraph', lang);
   }
 }
 
@@ -241,9 +468,19 @@ export class RecurrenceGraphViolationError extends Error {
  * reason); repeating it here would create a second copy that can drift.
  */
 export class EventQuotaExceededError extends Error {
-  constructor(message = '保存できる予定の上限に達しました。不要な予定を削除してから、もう一度お試しください') {
-    super(message);
+  readonly code = 'EVENT_QUOTA' as const;
+  readonly messageKey = 'error.eventQuota' as const;
+
+  readonly hasCustomMessage: boolean;
+
+  constructor(message?: string) {
+    super(message ?? ja('error.eventQuota'));
     this.name = 'EventQuotaExceededError';
+    this.hasCustomMessage = message !== undefined;
+  }
+
+  localize(lang: Language): string {
+    return this.hasCustomMessage ? this.message : t('error.eventQuota', lang);
   }
 }
 
@@ -259,9 +496,19 @@ export class EventQuotaExceededError extends Error {
  * deletable one exists.
  */
 export class ExceptionQuotaExceededError extends Error {
-  constructor(message = 'この繰り返し予定の個別変更が上限に達しました。個別変更を整理してから、もう一度お試しください') {
-    super(message);
+  readonly code = 'EXCEPTION_QUOTA' as const;
+  readonly messageKey = 'error.exceptionQuota' as const;
+
+  readonly hasCustomMessage: boolean;
+
+  constructor(message?: string) {
+    super(message ?? ja('error.exceptionQuota'));
     this.name = 'ExceptionQuotaExceededError';
+    this.hasCustomMessage = message !== undefined;
+  }
+
+  localize(lang: Language): string {
+    return this.hasCustomMessage ? this.message : t('error.exceptionQuota', lang);
   }
 }
 
@@ -274,10 +521,53 @@ export class ExceptionQuotaExceededError extends Error {
  * which case a timed recurrence cannot be created. Never resolved by falling
  * back to UTC: a guessed zone silently changes what a series means.
  */
+export type InvalidTimezoneReason = 'unsupported' | 'timedRecurrenceOnly';
+
 export class InvalidTimezoneError extends Error {
-  constructor(message = 'このタイムゾーンは使用できません。ブラウザの日付と時刻の設定をご確認ください') {
-    super(message);
+  readonly code = 'INVALID_TIMEZONE' as const;
+  /**
+   * 'unsupported'          the zone itself is not one the database will store
+   *                        (the DB's TIMEWEAVE_TZ_INVALID).
+   * 'timedRecurrenceOnly'  the zone is fine but the ROW may not hold one: only
+   *                        a timed recurring master can. Raised from two
+   *                        places with the identical sentence, which is why
+   *                        both now share one key.
+   */
+  readonly reason: InvalidTimezoneReason;
+  /** Follows `reason`; `code` stays single. See SeriesEditBlockedError. */
+  readonly messageKey: MessageKey;
+
+  readonly hasCustomMessage: boolean;
+
+  constructor(message?: string, reason: InvalidTimezoneReason = 'unsupported') {
+    super(
+      message ??
+        (reason === 'timedRecurrenceOnly'
+          ? ja('error.timezonePlacement')
+          : ja('error.invalidTimezone')),
+    );
     this.name = 'InvalidTimezoneError';
+    this.reason = reason;
+    this.messageKey =
+      reason === 'timedRecurrenceOnly' ? 'error.timezonePlacement' : 'error.invalidTimezone';
+    this.hasCustomMessage = message !== undefined;
+  }
+
+  /**
+   * Only a TIMED RECURRING event may carry a zone.
+   *
+   * A named constructor, so `message` keeps its place as the first parameter
+   * and every existing `new InvalidTimezoneError(...)` still means what it did.
+   */
+  static timedRecurrenceOnly(): InvalidTimezoneError {
+    return new InvalidTimezoneError(undefined, 'timedRecurrenceOnly');
+  }
+
+  localize(lang: Language): string {
+    if (this.hasCustomMessage) return this.message;
+    return this.reason === 'timedRecurrenceOnly'
+      ? t('error.timezonePlacement', lang)
+      : t('error.invalidTimezone', lang);
   }
 }
 
@@ -289,9 +579,19 @@ export class InvalidTimezoneError extends Error {
  * the user can fix, so the message says only that the save failed.
  */
 export class TimezoneRequiredError extends Error {
-  constructor(message = '繰り返し予定のタイムゾーンを決定できなかったため、保存できませんでした') {
-    super(message);
+  readonly code = 'TIMEZONE_REQUIRED' as const;
+  readonly messageKey = 'error.timezoneRequired' as const;
+
+  readonly hasCustomMessage: boolean;
+
+  constructor(message?: string) {
+    super(message ?? ja('error.timezoneRequired'));
     this.name = 'TimezoneRequiredError';
+    this.hasCustomMessage = message !== undefined;
+  }
+
+  localize(lang: Language): string {
+    return this.hasCustomMessage ? this.message : t('error.timezoneRequired', lang);
   }
 }
 
@@ -303,8 +603,18 @@ export class TimezoneRequiredError extends Error {
  * "unsupported" in Free/Busy.
  */
 export class TimezoneClearedError extends Error {
-  constructor(message = '繰り返し予定のタイムゾーンは解除できません') {
-    super(message);
+  readonly code = 'TIMEZONE_CLEARED' as const;
+  readonly messageKey = 'error.timezoneCleared' as const;
+
+  readonly hasCustomMessage: boolean;
+
+  constructor(message?: string) {
+    super(message ?? ja('error.timezoneCleared'));
     this.name = 'TimezoneClearedError';
+    this.hasCustomMessage = message !== undefined;
+  }
+
+  localize(lang: Language): string {
+    return this.hasCustomMessage ? this.message : t('error.timezoneCleared', lang);
   }
 }

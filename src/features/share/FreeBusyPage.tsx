@@ -23,22 +23,27 @@
 import { useEffect, useMemo, useState } from 'react';
 import { isSupabaseConfigured } from '../../lib/supabase';
 import { getFreeBusy } from '../../repositories/shareRepository';
+import { useLanguage, useTranslate } from '../../i18n/useLanguage';
+import { weekdayShort } from '../../i18n/dateNames';
 import { mergeFreeBusySlots } from '../../services/mergeIntervals';
 import type { FreeBusyResult } from '../../types/share';
 import { getUserTimeZone } from '../../utils/timezone';
 import { addDaysToDateString, formatTime } from '../../utils/datetime';
+import { intlLocale } from '../../i18n/resolveLanguage';
 import { useCalendarView } from '../../hooks/useCalendarView';
 import { buildWeekDays, weekRange, weekTitle } from '../calendar/weekGrid';
 import { busyForDay, hasNoDisclosedBusy } from './freeBusyLayout';
 import { freeBusyErrorBanner } from './freeBusyBanner';
+import { freeBusyLegend } from './freeBusyLegend';
 import {
-  ACTIVE_EMPTY_MESSAGE,
-  UNAVAILABLE_MESSAGE,
+  activeEmptyMessage,
+  blockAccessibleName,
+  unavailableMessage,
   freeBusyPresentation,
 } from './freeBusyPresentation';
 import {
-  AVAILABLE_EMPTY_MESSAGE,
-  AVAILABLE_INDETERMINATE_MESSAGE,
+  availableEmptyMessage,
+  availableIndeterminateMessage,
   availablePresentation,
   availableSlots,
   hasDisclosedAvailable,
@@ -46,15 +51,32 @@ import {
 
 type Load =
   | { status: 'loading' }
-  // The banner text is resolved once, at the moment of failure, so the render
-  // path stays free of error-shape knowledge.
-  | { status: 'error'; message: string }
+  // THE CAUSE, NOT THE SENTENCE. This used to hold the resolved banner text,
+  // built at the moment of failure. That pinned the wording to whatever
+  // language was current when the fetch rejected, so a later language change
+  // re-rendered every other string on the page and left this one behind.
+  // Keeping the cause moves the wording into the render pass, where the
+  // viewer's language is known; freeBusyErrorBanner still owns all knowledge
+  // of error shapes, so the JSX below learns none of it.
+  | { status: 'error'; cause: unknown }
   | { status: 'ok'; result: FreeBusyResult };
 
-const WEEKDAY_LABELS = ['月', '火', '水', '木', '金', '土', '日'];
-
 export function FreeBusyPage({ token }: { token: string }) {
+  // The ANONYMOUS viewer's language, resolved from their own browser. The
+  // owner's preference is never fetched on this route -- anon holds no
+  // privilege on owner_settings, and showing a stranger the owner's language
+  // would be the wrong answer even if it did.
+  const tr = useTranslate();
+  // The same resolved language the copy above uses -- the ANONYMOUS
+  // viewer's, from their own browser. Reading it here starts no fetch: the
+  // provider on this route carries isPublicRoute, so owner_settings is
+  // never asked for.
+  const { language } = useLanguage();
   const view = useCalendarView('week');
+  // The ANONYMOUS viewer’s locale, from the language their own browser
+  // resolved -- never the owner’s. The ZONE below is a separate concern and
+  // stays the viewer’s too; the language decides only how a time reads.
+  const locale = intlLocale(language);
   const timeZone = useMemo(() => getUserTimeZone(), []);
   const [load, setLoad] = useState<Load>({ status: 'loading' });
 
@@ -98,7 +120,7 @@ export function FreeBusyPage({ token }: { token: string }) {
         // Includes 0019's two rate-limit refusals, 22023 and network errors.
         // Do NOT show an empty grid as free -- freeBusyErrorBanner keeps that
         // note on every branch.
-        if (!cancelled) setLoad({ status: 'error', message: freeBusyErrorBanner(cause) });
+        if (!cancelled) setLoad({ status: 'error', cause });
       });
 
     return () => {
@@ -108,8 +130,8 @@ export function FreeBusyPage({ token }: { token: string }) {
 
   if (!isSupabaseConfigured) {
     return (
-      <div className="freebusy-page">
-        <p className="banner error">共有機能は利用できません。</p>
+      <div className="freebusy-page" lang={language}>
+        <p className="banner error">{tr('sharePage.disabled')}</p>
       </div>
     );
   }
@@ -122,35 +144,62 @@ export function FreeBusyPage({ token }: { token: string }) {
   // period notice and the busy-semantics footer. Header plus one generic line.
   if (freeBusyPresentation(load) === 'unavailable') {
     return (
-      <div className="freebusy-page">
+      <div className="freebusy-page" lang={language}>
         <header className="freebusy-header">
           <div className="brand">TimeWeave</div>
-          <span className="freebusy-subtitle">空き時間（読み取り専用）</span>
+          <span className="freebusy-subtitle">{tr('sharePage.subtitle')}</span>
         </header>
-        <p className="banner warn" role="alert">{UNAVAILABLE_MESSAGE}</p>
+        <p className="banner warn" role="alert">{unavailableMessage(language)}</p>
       </div>
     );
   }
 
   return (
-    <div className="freebusy-page">
+    <div className="freebusy-page" lang={language}>
       <header className="freebusy-header">
         <div className="brand">TimeWeave</div>
-        <span className="freebusy-subtitle">空き時間（読み取り専用）</span>
+        <span className="freebusy-subtitle">{tr('sharePage.subtitle')}</span>
       </header>
 
       <div className="toolbar">
         <div className="toolbar-nav">
-          <button className="btn" onClick={view.today}>今週</button>
-          <button className="btn icon" aria-label="前の週" onClick={view.prev}>‹</button>
-          <button className="btn icon" aria-label="次の週" onClick={view.next}>›</button>
-          <h2 className="toolbar-title">{weekTitle(view.anchor, timeZone)}</h2>
+          <button className="btn" onClick={view.today}>{tr('sharePage.thisWeek')}</button>
+          <button className="btn icon" aria-label={tr('sharePage.prevWeek')} onClick={view.prev}>‹</button>
+          <button className="btn icon" aria-label={tr('sharePage.nextWeek')} onClick={view.next}>›</button>
+          <h2 className="toolbar-title">{weekTitle(view.anchor, timeZone, locale)}</h2>
         </div>
       </div>
 
+      {/* P8-mobile-2: what the blocks mean, in words, before any of them. It
+          names only what can be drawn for THIS link (freeBusyLegend.ts) and
+          always ends with the caveat that empty time is not necessarily free.
+          The swatches repeat the blocks' own fill / outline-and-hatch, and are
+          decorative: the words carry the meaning. */}
+      {load.status === 'ok' && (() => {
+        const legend = freeBusyLegend(load.result.available);
+        return (
+          <section className="freebusy-legend" aria-labelledby="freebusy-legend-title">
+            <h3 id="freebusy-legend-title" className="freebusy-legend-title">{tr(legend.headingKey)}</h3>
+            <ul className="freebusy-legend-items">
+              <li>
+                <span className="freebusy-swatch" aria-hidden="true" />
+                <span>{tr('legend.busy')}</span>
+              </li>
+              {legend.available && (
+                <li>
+                  <span className="freebusy-swatch available" aria-hidden="true" />
+                  <span>{tr('legend.available')}</span>
+                </li>
+              )}
+            </ul>
+            <p className="freebusy-legend-note">{tr(legend.noteKey)}</p>
+          </section>
+        );
+      })()}
+
       {load.status === 'ok' && !load.result.complete && (
         <p className="banner warn" role="alert">
-          この期間には未対応の繰り返し予定が含まれています。表示されていない時間も空いているとは限りません。
+          {tr('sharePage.incompleteWarning')}
         </p>
       )}
 
@@ -161,7 +210,7 @@ export function FreeBusyPage({ token }: { token: string }) {
       {load.status === 'ok' &&
         hasNoDisclosedBusy(load.result) &&
         !hasDisclosedAvailable(load.result.available) && (
-          <p className="banner info">{ACTIVE_EMPTY_MESSAGE}</p>
+          <p className="banner info">{activeEmptyMessage(language)}</p>
         )}
 
       {/* Its own banner, never folded into the busy completeness warning above.
@@ -170,7 +219,7 @@ export function FreeBusyPage({ token }: { token: string }) {
           one speak for the other. role="alert" matches the busy warning: both
           say that what is on screen is not the whole picture. */}
       {load.status === 'ok' && availablePresentation(load.result.available) === 'indeterminate' && (
-        <p className="banner warn" role="alert">{AVAILABLE_INDETERMINATE_MESSAGE}</p>
+        <p className="banner warn" role="alert">{availableIndeterminateMessage(language)}</p>
       )}
 
       {/* Only for an opted-in link that computed an exact, empty answer. An
@@ -180,14 +229,14 @@ export function FreeBusyPage({ token }: { token: string }) {
       {load.status === 'ok' &&
         availablePresentation(load.result.available) === 'slots' &&
         availableSlots(load.result.available).length === 0 && (
-          <p className="banner info">{AVAILABLE_EMPTY_MESSAGE}</p>
+          <p className="banner info">{availableEmptyMessage(language)}</p>
         )}
 
       {load.status === 'error' && (
-        <p className="banner error" role="alert">{load.message}</p>
+        <p className="banner error" role="alert">{freeBusyErrorBanner(load.cause, language)}</p>
       )}
 
-      {load.status === 'loading' && <p className="freebusy-loading">読み込み中…</p>}
+      {load.status === 'loading' && <p className="freebusy-loading">{tr('sharePage.loading')}</p>}
 
       {load.status === 'ok' && (
         <div className="freebusy-week">
@@ -204,35 +253,63 @@ export function FreeBusyPage({ token }: { token: string }) {
             return (
               <div key={cell.dayKey} className={`freebusy-day${cell.isToday ? ' today' : ''}`}>
                 <div className="freebusy-day-head">
-                  <span className="freebusy-dow">{WEEKDAY_LABELS[cell.weekdayIndex]}</span>
+                  <span className="freebusy-dow">{weekdayShort(language, cell.weekdayIndex)}</span>
                   <span className="freebusy-dom">{cell.dayOfMonth}</span>
                 </div>
                 <div className="freebusy-day-body">
                   {busy.allDayCount > 0 && (
-                    <div className="freebusy-block allday" aria-label="終日 予定あり">終日 予定あり</div>
+                    <div className="freebusy-block allday" aria-label={tr('sharePage.block.busyAllDay')}>{tr('sharePage.block.busyAllDay')}</div>
                   )}
-                  {busy.timed.map((t) => (
-                    <div key={t.start} className="freebusy-block" aria-label="予定あり">
-                      {formatTime(t.start)}–{formatTime(t.end)}
-                    </div>
-                  ))}
+                  {/* The accessible name repeats the RANGE as well as the
+                      state: aria-label replaces the element's contents, so a
+                      label of "Busy" alone meant the time was never read out.
+                      Both halves are built from the same two strings that are
+                      rendered, so they cannot disagree. */}
+                  {busy.timed.map((t) => {
+                    const start = formatTime(t.start, locale);
+                    const end = formatTime(t.end, locale);
+                    return (
+                      <div
+                        key={t.start}
+                        className="freebusy-block"
+                        aria-label={blockAccessibleName('busy', start, end, language)}
+                      >
+                        <span className="freebusy-block-state">{tr('sharePage.block.busy')}</span>{' '}
+                        <span className="freebusy-block-time">{start}–{end}</span>
+                      </div>
+                    );
+                  })}
                   {/* Available blocks come AFTER the busy ones and carry their
                       own class and aria-label, so the two are distinguishable
                       without colour alone. The keys are prefixed because an
                       available block may legitimately start at the same instant
                       a busy one does. */}
                   {open.allDayCount > 0 && (
-                    <div className="freebusy-block allday available" aria-label="終日 空き時間">終日 空き時間</div>
+                    <div className="freebusy-block allday available" aria-label={tr('sharePage.block.availableAllDay')}>{tr('sharePage.block.availableAllDay')}</div>
                   )}
-                  {open.timed.map((t) => (
-                    <div key={`a-${t.start}`} className="freebusy-block available" aria-label="空き時間">
-                      {formatTime(t.start)}–{formatTime(t.end)}
-                    </div>
-                  ))}
+                  {open.timed.map((t) => {
+                    const start = formatTime(t.start, locale);
+                    const end = formatTime(t.end, locale);
+                    return (
+                      <div
+                        key={`a-${t.start}`}
+                        className="freebusy-block available"
+                        aria-label={blockAccessibleName('available', start, end, language)}
+                      >
+                        <span className="freebusy-block-state">{tr('sharePage.block.available')}</span>{' '}
+                        <span className="freebusy-block-time">{start}–{end}</span>
+                      </div>
+                    );
+                  })}
                   {/* The dash means "nothing disclosed for this day", so it
                       belongs only where neither set put anything. It never
                       means free -- the footer and the banners carry that. */}
-                  {!hasBusy && !hasOpen && <div className="freebusy-free">—</div>}
+                  {!hasBusy && !hasOpen && (
+                    <div className="freebusy-free">
+                      <span aria-hidden="true">—</span>
+                      <span className="freebusy-sr-only">{tr('sharePage.day.nothing')}</span>
+                    </div>
+                  )}
                 </div>
               </div>
             );
@@ -248,8 +325,8 @@ export function FreeBusyPage({ token }: { token: string }) {
           shows nothing as on one that shows blocks. */}
       <p className="freebusy-note">
         {load.status === 'ok' && availablePresentation(load.result.available) === 'slots'
-          ? '表示されるのは予定の有無（busy）と、共有者が明示した空き時間（available）だけで、内容は共有されません。空き時間として表示されていない時間が空いているとは限りません。'
-          : '表示されるのは予定の有無（busy）のみで、内容は共有されません。'}
+          ? tr('sharePage.footer.withAvailable')
+          : tr('sharePage.footer.busyOnly')}
       </p>
     </div>
   );

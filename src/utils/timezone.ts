@@ -9,16 +9,68 @@
  * DST). All-day values remain calendar dates and never go through these.
  */
 
-import { formatInTimeZone, fromZonedTime } from 'date-fns-tz';
+import { fromZonedTime } from 'date-fns-tz';
 
 /** The user's timezone. The single place that reads the environment. */
 export function getUserTimeZone(): string {
   return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
 }
 
+/*
+  READING A WALL CLOCK (P8-c1). Straight from Intl, one cached formatter per
+  zone. This replaced date-fns-tz formatInTimeZone, which builds a LOCAL Date
+  whose fields are the zone's wall clock and formats that: when the wall clock
+  does not exist in the OS zone, the local Date silently moves it. MEASURED
+  with the OS on America/New_York: the instant that is 2026-03-08 02:30 in
+  Tokyo came back as 03:30, because 02:30 does not exist in New York that day.
+  Every helper below reads the wall clock through here, so none of them
+  depends on the computer's own zone any more.
+*/
+const WALL_FORMATS = new Map<string, Intl.DateTimeFormat>();
+
+interface WallFields {
+  year: number;
+  month: number;
+  day: number;
+  hour: number;
+  minute: number;
+  second: number;
+}
+
+function zonedWallFields(instantMs: number, timeZone: string): WallFields {
+  let fmt = WALL_FORMATS.get(timeZone);
+  if (!fmt) {
+    fmt = new Intl.DateTimeFormat('en-US', {
+      timeZone,
+      hourCycle: 'h23',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+    });
+    WALL_FORMATS.set(timeZone, fmt);
+  }
+  const p: Record<string, string> = {};
+  for (const part of fmt.formatToParts(new Date(instantMs))) p[part.type] = part.value;
+  return {
+    year: Number(p.year),
+    month: Number(p.month),
+    day: Number(p.day),
+    // h23 never says 24, but an engine that ignores hourCycle may; 24 is 0.
+    hour: Number(p.hour) % 24,
+    minute: Number(p.minute),
+    second: Number(p.second),
+  };
+}
+
+const pad2 = (n: number) => String(n).padStart(2, '0');
+
 /** Calendar day ("yyyy-MM-dd") that a UTC instant falls on, in the given zone. */
 export function zonedDayKey(iso: string, timeZone: string): string {
-  return formatInTimeZone(new Date(iso), timeZone, 'yyyy-MM-dd');
+  const w = zonedWallFields(new Date(iso).getTime(), timeZone);
+  return `${String(w.year).padStart(4, '0')}-${pad2(w.month)}-${pad2(w.day)}`;
 }
 
 /**
@@ -26,27 +78,44 @@ export function zonedDayKey(iso: string, timeZone: string): string {
  * time in the zone (DST-safe for positioning). Range [0, 1440).
  */
 export function zonedMinutesOfDay(iso: string, timeZone: string): number {
-  const [h, m, s] = formatInTimeZone(new Date(iso), timeZone, 'HH:mm:ss')
-    .split(':')
-    .map(Number);
-  return h! * 60 + m! + s! / 60;
-}
-
-/** UTC instant (ISO) of local midnight for a calendar day ("yyyy-MM-dd") in the zone. */
-export function dayStartInstantIso(dayKey: string, timeZone: string): string {
-  return fromZonedTime(`${dayKey}T00:00:00`, timeZone).toISOString();
+  const w = zonedWallFields(new Date(iso).getTime(), timeZone);
+  return w.hour * 60 + w.minute + w.second / 60;
 }
 
 /**
- * UTC instant (ISO) for a wall-clock minute-of-day on a calendar day in the
- * zone (DST-correct). Used when creating an event from a clicked time slot.
+ * UTC instant (ISO) at which a calendar day ("yyyy-MM-dd") STARTS in the zone:
+ * the earliest instant whose wall-clock date there is that day or later. A day
+ * is the half-open range [start of day, start of next day).
+ *
+ * R1 (P8-c1, docs/p8-datetime-contract.md §9). This used to be
+ * fromZonedTime(day + 'T00:00:00'), which is right for an ordinary midnight
+ * and wrong exactly where a day boundary matters most. MEASURED on the
+ * runtime's tzdata:
+ *   - a midnight that never happens (America/Havana 2026-03-08, Santiago,
+ *     Cairo: 23:59:59 is followed by 01:00) came out as 23:00 the evening
+ *     BEFORE, so the previous day lost its last hour to this one;
+ *   - a midnight that happens twice (Havana 2026-11-01) came out as the first
+ *     or the SECOND one depending on the OS zone;
+ *   - a day that never happens (Pacific/Apia 2011-12-30) came out as the
+ *     previous midnight, swallowing the whole of 29 December.
+ * Now: an ordinary midnight is that instant (unchanged); a missing midnight is
+ * the instant the clocks jump; a doubled midnight is the first of the two; a
+ * missing day starts and ends where the next day starts, i.e. it is empty.
+ * This is also what a JavaScript Date makes of a local midnight, so the month
+ * view (local Date midnights, monthGrid.ts) and this function now agree.
+ *
+ * Built on classifyZonedWallClock below, so the gap/fold detection is the one
+ * the event form already uses; the OS zone plays no part.
  */
-export function instantFromZonedDayMinutes(dayKey: string, minutes: number, timeZone: string): string {
-  const h = Math.floor(minutes / 60);
-  const m = Math.floor(minutes % 60);
-  const hh = String(h).padStart(2, '0');
-  const mm = String(m).padStart(2, '0');
-  return fromZonedTime(`${dayKey}T${hh}:${mm}:00`, timeZone).toISOString();
+export function dayStartInstantIso(dayKey: string, timeZone: string): string {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(dayKey);
+  if (!m) return fromZonedTime(`${dayKey}T00:00:00`, timeZone).toISOString(); // unchanged failure mode
+  const c = classifyZonedWallClock(
+    { year: Number(m[1]), month: Number(m[2]), day: Number(m[3]), hour: 0, minute: 0, second: 0, ms: 0 },
+    timeZone,
+  );
+  const ms = c.kind === 'normal' ? c.instantMs : c.kind === 'fold' ? c.earlierMs : c.firstAfterMs;
+  return new Date(ms).toISOString();
 }
 
 /** Weekday of a calendar date, 0 = Monday .. 6 = Sunday (zone-independent). */
@@ -198,13 +267,14 @@ const OFFSET_PROBE_MS = 26 * 60 * 60 * 1000;
  * representation makes wall clocks directly comparable and subtractable.
  */
 function zonedWallMsAt(instantMs: number, timeZone: string): number {
-  const s = formatInTimeZone(new Date(instantMs), timeZone, "yyyy-MM-dd'T'HH:mm:ss");
-  const [datePart, timePart] = s.split('T');
-  const [y, mo, d] = datePart!.split('-').map(Number);
-  const [h, mi, sec] = timePart!.split(':').map(Number);
+  const w = zonedWallFields(instantMs, timeZone);
   // Every zone offset is a whole number of seconds, so the sub-second part of
-  // the instant passes through the conversion unchanged.
-  return Date.UTC(y!, mo! - 1, d!, h!, mi!, sec!, ((instantMs % 1000) + 1000) % 1000);
+  // the instant passes through the conversion unchanged. setUTCFullYear keeps
+  // years 0-99 literal, which Date.UTC would read as 1900-1999.
+  const d = new Date(0);
+  d.setUTCFullYear(w.year, w.month - 1, w.day);
+  d.setUTCHours(w.hour, w.minute, w.second, ((instantMs % 1000) + 1000) % 1000);
+  return d.getTime();
 }
 
 /** The zone's UTC offset, in ms, in effect at `instantMs`. */
@@ -246,4 +316,80 @@ export function resolveZonedWallClock(wall: ZonedWallClock, timeZone: string): n
   // has none. In the last two cases the LATER candidate is the answer.
   const valid = candidates.filter((c) => zonedWallMsAt(c, timeZone) === wallMs);
   return Math.max(...(valid.length > 0 ? valid : candidates));
+}
+
+// ---------------------------------------------------------------------------
+// Classifying a wall clock (P8-b5.6b-2).
+//
+// resolveZonedWallClock above ANSWERS a gap or a fold (the later instant, as
+// PostgreSQL does) because an expander has to produce something. The event
+// form must not answer on the owner's behalf: a time that does not exist is
+// refused, and a time that happens twice is put back to the owner as two
+// choices. This function only COUNTS -- it never picks -- and resolves nothing
+// on its own. Same probe window, same validity test, so the two cannot
+// disagree about which wall clocks are awkward.
+// ---------------------------------------------------------------------------
+
+export type WallClockClass =
+  | { kind: 'normal'; instantMs: number }
+  /** Clocks jumped forward over it. `lastBeforeMs`/`firstAfterMs` bracket the jump. */
+  | { kind: 'gap'; lastBeforeMs: number; firstAfterMs: number; gapMinutes: number }
+  /** Clocks went back over it. `earlierMs` is the 1st occurrence, `laterMs` the 2nd. */
+  | { kind: 'fold'; earlierMs: number; laterMs: number };
+
+export function classifyZonedWallClock(wall: ZonedWallClock, timeZone: string): WallClockClass {
+  const wallMs = Date.UTC(
+    wall.year, wall.month - 1, wall.day,
+    wall.hour, wall.minute, wall.second, wall.ms,
+  );
+  const offBefore = zoneOffsetMsAt(wallMs - OFFSET_PROBE_MS, timeZone);
+  const offAfter = zoneOffsetMsAt(wallMs + OFFSET_PROBE_MS, timeZone);
+  const candidates =
+    offBefore === offAfter ? [wallMs - offBefore] : [wallMs - offBefore, wallMs - offAfter];
+  const valid = candidates
+    .filter((c) => zonedWallMsAt(c, timeZone) === wallMs)
+    .sort((a, b) => a - b);
+
+  if (valid.length === 2) return { kind: 'fold', earlierMs: valid[0]!, laterMs: valid[1]! };
+  if (valid.length === 1) return { kind: 'normal', instantMs: valid[0]! };
+
+  // A gap: reading the wall with the NEW offset lands before the switch and
+  // with the OLD offset after it. Find the switch to the minute by asking the
+  // zone, never by assuming the jump is an hour (Lord Howe moves 30 minutes).
+  let lo = Math.min(wallMs - offBefore, wallMs - offAfter);
+  let hi = Math.max(wallMs - offBefore, wallMs - offAfter);
+  while (hi - lo > 60_000) {
+    const mid = lo + Math.floor((hi - lo) / 120_000) * 60_000;
+    if (zoneOffsetMsAt(mid, timeZone) === offAfter) hi = mid;
+    else lo = mid;
+  }
+  return {
+    kind: 'gap',
+    lastBeforeMs: hi - 60_000,
+    firstAfterMs: hi,
+    gapMinutes: Math.round((offAfter - offBefore) / 60_000),
+  };
+}
+
+/** The zone's UTC offset at an instant, in whole minutes (e.g. -240). */
+export function zoneOffsetMinutesAt(instantMs: number, timeZone: string): number {
+  return Math.round(zoneOffsetMsAt(instantMs, timeZone) / 60_000);
+}
+
+/**
+ * The zone's short name at an instant ("EDT", "EST", "BST"), or '' when the
+ * runtime only has a numeric one ("GMT+9") -- the caller shows the UTC offset
+ * anyway, so a numeric name would only repeat it. Always the en-US spelling:
+ * these abbreviations are not translated, and Intl's ja short names are the
+ * numeric form.
+ */
+export function zoneAbbreviation(instantMs: number, timeZone: string): string {
+  try {
+    const name = new Intl.DateTimeFormat('en-US', { timeZone, timeZoneName: 'short' })
+      .formatToParts(new Date(instantMs))
+      .find((p) => p.type === 'timeZoneName')?.value ?? '';
+    return /^(GMT|UTC)/.test(name) ? '' : name;
+  } catch {
+    return '';
+  }
 }

@@ -758,9 +758,13 @@ begin
   perform set_config('role', 'anon', true);
   v_wrap := public.get_free_busy(v_t1, v_from, v_to, v_fd, v_td);
   perform set_config('role', 'none', true);
-  assert v_wrap = v_res,
-    'R8.P1 the wrapper must return exactly what the core returned. core=' || v_res::text
-    || ' wrapper=' || v_wrap::text;
+  -- PASS-THROUGH, in its 0024 form. 0023 added link_state and 0024 added
+  -- available; neither touches the Busy payload, so stripping exactly those two
+  -- keys must give the core answer back unchanged. Still EQUALITY, not
+  -- containment -- an unexpected third key fails here just as before.
+  assert v_wrap - 'link_state' - 'available' = v_res,
+    'R8.P1 the wrapper must not alter the Busy payload it got from the core. core='
+    || v_res::text || ' wrapper=' || v_wrap::text;
 
   ----------------------------------------------------------------- R8 P2
   -- Only `availability` changes here. events_quota_graph_au fires and passes:
@@ -776,9 +780,10 @@ begin
   perform set_config('role', 'anon', true);
   v_wrap := public.get_free_busy(v_t1, v_from, v_to, v_fd, v_td);
   perform set_config('role', 'none', true);
-  assert v_wrap = v_res,
-    'R8.P2 the wrapper must return exactly what the core returned. core=' || v_res::text
-    || ' wrapper=' || v_wrap::text;
+  -- PASS-THROUGH, in its 0024 form (see R8.P1).
+  assert v_wrap - 'link_state' - 'available' = v_res,
+    'R8.P2 the wrapper must not alter the Busy payload it got from the core. core='
+    || v_res::text || ' wrapper=' || v_wrap::text;
 
   ----------------------------------------------------------------- cleanup
   -- 0017 registers no DELETE trigger, so neither delete needs a bypass.
@@ -1061,9 +1066,10 @@ begin
   perform set_config('role', 'anon', true);
   v_wrap := public.get_free_busy(v_t1, v_from, v_to, v_fd, v_td);
   perform set_config('role', 'none', true);
-  assert v_wrap = v_res,
-    'R11 the wrapper must return exactly what the core returned. core=' || v_res::text
-    || ' wrapper=' || v_wrap::text;
+  -- PASS-THROUGH, in its 0024 form (see R8.P1).
+  assert v_wrap - 'link_state' - 'available' = v_res,
+    'R11 the wrapper must not alter the Busy payload it got from the core. core='
+    || v_res::text || ' wrapper=' || v_wrap::text;
 
   ------------------------------------------------------------- contrast phase
   -- Only the exception's availability changes. The detach must not move.
@@ -1593,9 +1599,10 @@ begin
   perform set_config('role', 'anon', true);
   v_wrap := public.get_free_busy(v_t1, v_from, v_to, v_fd, v_td);
   perform set_config('role', 'none', true);
-  assert v_wrap = v_res,
-    'R17.O2 the wrapper must return exactly what the core returned. core=' || v_res::text
-    || ' wrapper=' || v_wrap::text;
+  -- PASS-THROUGH, in its 0024 form (see R8.P1).
+  assert v_wrap - 'link_state' - 'available' = v_res,
+    'R17.O2 the wrapper must not alter the Busy payload it got from the core. core='
+    || v_res::text || ' wrapper=' || v_wrap::text;
 
   -- O3: only E17b's availability changes. Everything else is held fixed.
   update public.events set availability = 'busy' where id = v_b;
@@ -1662,9 +1669,21 @@ begin
   perform set_config('role', 'anon', true);
   v_wrap := public.get_free_busy(v_t1, v_from, v_to, v_fd, v_td);
   perform set_config('role', 'none', true);
-  assert v_wrap = '{"complete": true, "slots": []}'::jsonb,
-    'R18.A with every relevant event AVAILABLE the wrapper must return the empty answer '
-    'verbatim -- the same one an expired or unknown token returns. Got ' || v_wrap::text;
+  -- R18.A, in its 0024 form. THE DISCLOSURE CLAIM SURVIVES UNCHANGED: an
+  -- all-available calendar still discloses nothing, complete=true slots=[].
+  -- THE INDISTINGUISHABILITY CLAIM DOES NOT, and was not weakened here but
+  -- deliberately superseded: 0023 exists precisely to make an active link
+  -- distinguishable from an expired or unknown one, and 0023_link_state_test
+  -- section 9 now pins the unavailable side of that distinction. This suite's
+  -- links are inserted without share_available and take the 0022 column default
+  -- (false), so available is not_requested for every call here.
+  assert v_wrap = jsonb_build_object(
+           'link_state', 'active',
+           'complete',   true,
+           'slots',      '[]'::jsonb,
+           'available',  jsonb_build_object('status','not_requested')),
+    'R18.A with every relevant event AVAILABLE the wrapper must disclose nothing, '
+    'on a link that is still ACTIVE. Got ' || v_wrap::text;
 
   ------------------------------------------------------------------- PHASE B
   update public.events set availability = 'busy' where id = v_e18;
@@ -1675,15 +1694,21 @@ begin
   v_wrap := public.get_free_busy(v_t1, v_from, v_to, v_fd, v_td);
   perform set_config('role', 'none', true);
 
-  assert v_wrap = v_core,
+  -- PASS-THROUGH, in its 0024 form (see R8.P1).
+  assert v_wrap - 'link_state' - 'available' = v_core,
     'R18.B the wrapper must not reshape the core answer. core=' || v_core::text
     || ' wrapper=' || v_wrap::text;
+  -- The wrapper answer ITSELF is the subject here, so the full current key set
+  -- is pinned rather than stripped -- this is the one place in this suite that
+  -- states the whole 0024 active shape.
   assert v_wrap = jsonb_build_object(
+           'link_state', 'active',
            'complete', true,
            'slots', jsonb_build_array(jsonb_build_object(
              'all_day', false,
              'start', to_jsonb(timestamptz '2026-06-02 09:00:00+00'),
-             'end',   to_jsonb(timestamptz '2026-06-02 10:00:00+00')))),
+             'end',   to_jsonb(timestamptz '2026-06-02 10:00:00+00'))),
+           'available', jsonb_build_object('status','not_requested')),
     'R18.B the wrapper answer itself, got ' || v_wrap::text;
 
   delete from public.events where id = v_e18;

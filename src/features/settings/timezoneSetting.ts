@@ -14,6 +14,8 @@
  */
 
 import type { UiLanguage } from '../../types/settings';
+import { t } from '../../i18n/t';
+import { DEFAULT_LANGUAGE, type Language } from '../../i18n/types';
 
 /**
  * Zones to offer, newest-browser-first with a small fallback.
@@ -74,12 +76,31 @@ export function timezoneChangeNeedsWarning(
  * more than it looks -- an owner who thinks changing a zone will shift their
  * 09:00 meetings is being told, correctly, that it will not, because
  * `start_at` is an absolute instant.
+ *
+ * A FUNCTION SINCE P6 STEP 3. The three lines were resolved with
+ * DEFAULT_LANGUAGE at import time, so an owner reading the dialog in English
+ * would have been warned in Japanese -- about the one action in this app that
+ * retroactively changes what a live share link discloses. That is the worst
+ * place in the product to be unreadable.
+ *
+ * A TUPLE, NOT AN ARRAY. The three lines are an ordered set, not a list that
+ * happens to have three entries: all-day events first (what is reinterpreted),
+ * the share page second (who notices), timed events last (what does NOT move,
+ * which is the reassurance the owner is looking for). Typing it as a readonly
+ * triple makes "three, in this order" a compile-time fact rather than a runtime
+ * assertion, the same shape WeekdayNames uses in i18n/dateNames.ts.
+ *
+ * No cache: this dialog renders once, and only while confirming.
  */
-export const TIMEZONE_CHANGE_NOTICE = [
-  '終日の予定は、このタイムゾーンの暦日として解釈されます。',
-  '匿名共有ページに表示される空き時間が変わることがあります。',
-  '時刻を指定した予定（開始・終了時刻のある予定）は変わりません。',
-];
+export type TimezoneChangeNotice = readonly [string, string, string];
+
+export function timezoneChangeNotice(lang: Language = DEFAULT_LANGUAGE): TimezoneChangeNotice {
+  return [
+    t('settings.timezone.changeAllDay', lang),
+    t('settings.timezone.changeShare', lang),
+    t('settings.timezone.changeTimedUnaffected', lang),
+  ];
+}
 
 /**
  * What NOT setting a zone costs, for the owner who is wondering why their
@@ -89,10 +110,13 @@ export const TIMEZONE_CHANGE_NOTICE = [
  * is what sent this project on a long hunt once already: an all-day Busy event
  * in the same week as a timed Available one is the combination that cannot be
  * computed without a zone.
+ *
+ * `lang` defaults to the default language, so a call with no argument answers
+ * in the Japanese this dialog has always shown.
  */
-export const TIMEZONE_UNSET_NOTICE =
-  'タイムゾーンが未設定のため、終日の予定と時刻指定の空き時間が同じ期間に含まれる場合、'
-  + '匿名共有ページでは空き時間を表示できません（安全のため非表示になります）。';
+export function timezoneUnsetNotice(lang: Language = DEFAULT_LANGUAGE): string {
+  return t('settings.timezone.unsetNotice', lang);
+}
 
 /** Labels for the language control. Independent of the zone, always. */
 export const LANGUAGES: { value: UiLanguage; label: string }[] = [
@@ -100,29 +124,33 @@ export const LANGUAGES: { value: UiLanguage; label: string }[] = [
   { value: 'en', label: 'English' },
 ];
 
-/**
- * What the language control actually does TODAY, which is store a value.
+/*
+ * REMOVED AT THE END OF P6: languagePendingNotice.
  *
- * THE TRANSLATION LAYER DOES NOT EXIST YET. Migration 0025 created the column
- * so the i18n phase would need no migration of its own, and the control is
- * here so the preference survives until that phase lands -- but every string in
- * this app is still Japanese, and choosing English changes nothing on screen.
+ * It said the language control stored a value but did not change the screen,
+ * which was true for four phases and is now false -- LANGUAGE_SWITCH_ENABLED
+ * is true, so a saved preference is applied. Keeping it would be the mirror of
+ * the failure its own comment warned about: the owner would be told their
+ * choice has not taken effect while the page around the notice was already in
+ * their language.
  *
- * Saying "画面の文言だけが変わります" would therefore be a lie, and the
- * particular kind that is worst in a settings screen: the user picks English,
- * sees Japanese, and concludes the save failed or the app is broken. The notice
- * below says the value is kept and the switch is not live yet, which is both
- * true and the thing they need to know before clicking save.
+ * languageNotInCalculationNotice below stays. It is about something else --
+ * that the display language is not an input to the Free/Busy computation --
+ * and that remains true.
  */
-export const LANGUAGE_PENDING_NOTICE =
-  '言語の切り替えはまだ有効になっていません。現在はすべて日本語で表示されます。'
-  + '設定した値は保存され、翻訳の対応後に適用されます。';
 
 /**
  * The half of the old sentence that WAS true, kept separate because it is
  * about a different thing: whatever the language ends up doing, it will never
  * reach the Free/Busy computation. 0025 declares the column and reads it from
  * nowhere, which the postflight pins at H02.
+ *
+ * THE CLAIM IS UNCHANGED BY TRANSLATING IT, and has to stay that way: the
+ * sentence promises that the display language is not an input to what
+ * anonymous viewers are told. P6 step 2 is what makes it verifiable rather than
+ * merely asserted -- getFreeBusy takes no language argument, and the share
+ * repository names no i18n symbol at all.
  */
-export const LANGUAGE_NOT_IN_CALCULATION_NOTICE =
-  '言語設定は、共有される空き時間の計算には影響しません。';
+export function languageNotInCalculationNotice(lang: Language = DEFAULT_LANGUAGE): string {
+  return t('settings.language.notInCalculation', lang);
+}
